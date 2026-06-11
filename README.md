@@ -8,7 +8,7 @@ A self-contained **Oracle → Azure Database for PostgreSQL** migration workstat
 |---|---|
 | [deploy/azure/main.bicep](deploy/azure/main.bicep) | Bicep template — provisions the VM, VNet, NSG, and public IP |
 | [deploy/azure/cloud-init.yaml](deploy/azure/cloud-init.yaml) | Installs the full toolchain and starts the web app + code-server |
-| [deploy/azure/README.md](deploy/azure/README.md) | Detailed deployment guide and the 7-step workflow |
+| [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) | Detailed deployment guide and the 7-step workflow |
 | [deploy/azure/schema-conversions-vm-workstation.md](deploy/azure/schema-conversions-vm-workstation.md) | Microsoft Learn-style article describing the VM workstation approach |
 
 ## Quick start
@@ -28,7 +28,7 @@ az deployment group create -g oracle-bridge-rg -f deploy/azure/main.bicep \
 
 The deployment outputs `webAppUrl`, `codeServer`, and `sshCommand`. While the VM provisions, open `webAppUrl` to watch live install progress, or run `oracle-bridge status` over SSH.
 
-See [deploy/azure/README.md](deploy/azure/README.md) for prerequisites, first-time wiring, the 7-step workflow, security notes, and tear-down.
+See [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) for prerequisites, first-time wiring, the 7-step workflow, security notes, and tear-down.
 
 ## The 7-step flow
 
