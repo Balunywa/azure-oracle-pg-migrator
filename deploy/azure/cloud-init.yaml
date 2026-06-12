@@ -14,8 +14,8 @@
 #   - Oracle Instant Client 21 (thick client mode, for native net encryption)
 #   - Azure CLI (az sign-in for Microsoft Entra ID / Foundry)
 #
-# Access: connect over Azure Bastion (SSH with Microsoft Entra ID, or RDP via
-# a Bastion tunnel). No public web ports are opened.
+# Access: connect over Azure Bastion via an RDP tunnel (port 3389). The login
+# password is set at deploy time; no SSH and no public ports are opened.
 
 package_update: true
 package_upgrade: true
@@ -59,13 +59,13 @@ write_files:
     permissions: '0755'
     content: |
       #!/usr/bin/env bash
-      # Follow setup progress over SSH until provisioning completes.
+      # Follow setup progress (run from a terminal in the RDP desktop).
       echo "Tailing setup log (Ctrl-C to stop)..."
       tail -n +1 -f /var/log/oracle-workstation-setup.log &
       TAIL=$!
       until grep -q PROVISION_COMPLETE /var/log/oracle-workstation-setup.log 2>/dev/null; do sleep 2; done
       kill "$TAIL" 2>/dev/null || true
-      echo "=== Setup complete. RDP in over Bastion and open VS Code to start the Migration Wizard. ==="
+      echo "=== Setup complete. Open VS Code and start the Migration Wizard. ==="
 
 runcmd:
   # --- XFCE desktop + RDP (private, via Bastion) -----------------------------

@@ -23,15 +23,15 @@ az group create -n oracle-bridge-rg -l westeurope
 
 az deployment group create -g oracle-bridge-rg -f deploy/azure/main.bicep \
   -p adminUsername=azureuser \
-     adminLoginPrincipalId="$(az ad signed-in-user show --query id -o tsv)" \
+     adminPassword='<strong-password>' \
      foundryEndpoint="https://YOUR-FOUNDRY.openai.azure.com" \
      foundryDeployment="gpt-5.2"
 ```
 
-The deployment outputs `publicFqdn`, `vmResourceId`, `bastionSshCommand`, and
-`bastionRdpTunnelCommand`. Access is via Microsoft Entra ID over Azure Bastion — no SSH
-keys, no public port 22, no public web ports. SSH in to run `workstation-status` and set
-a desktop password, then RDP through a Bastion tunnel to use VS Code.
+The deployment outputs `publicFqdn`, `vmResourceId`, and `bastionRdpTunnelCommand`.
+Access is **RDP only, via an Azure Bastion tunnel** — no SSH, no public port 22, no
+public web ports. Open the tunnel, RDP to `localhost:13389` with the password you set,
+then use VS Code. Reset the password later without SSH via `az vm run-command`.
 
 See [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) for prerequisites, connection
 steps, the in-editor workflow, security notes, and tear-down.
@@ -48,8 +48,8 @@ steps, the in-editor workflow, security notes, and tear-down.
 
 ## Security
 
-- SSH is via Microsoft Entra ID over Azure Bastion — no key files, no public port 22; access is RBAC-controlled and audited.
-- No public web ports. RDP (3389) is reachable only from the virtual network, via the Bastion tunnel.
-- The desktop RDP password is set by you over SSH; no secret is baked into the template.
+- RDP only, via an Azure Bastion tunnel — no SSH, no public port 22; RDP (3389) is reachable only from the virtual network.
+- No public web ports.
+- The desktop password is a `@secure()` deploy-time parameter (not stored in the template) and can be rotated with `az vm run-command` — no SSH needed.
 - The VM uses a system-assigned managed identity; grant it only the least-privileged roles it needs.
 - Independently validate all converted objects before deploying to production.

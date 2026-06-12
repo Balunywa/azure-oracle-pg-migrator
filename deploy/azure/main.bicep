@@ -5,34 +5,26 @@
 // it can reach a privately networked Oracle source; no conversion logic runs
 // here.
 //
-// Access model: Microsoft Entra ID SSH login over Azure Bastion (no SSH keys,
-// no public port 22), and RDP for the desktop via a Bastion tunnel. Connect:
-//   az network bastion ssh -n oracle-bridge-bastion -g <rg> \
-//     --target-resource-id <vm-id> --auth-type AAD --username <you@domain>
+// Access model: RDP only, via an Azure Bastion tunnel. No SSH, no public port
+// 22, no public web ports. The desktop login password is set at deploy time
+// (adminPassword); reset it later without SSH using `az vm run-command`.
+// Connect:
+//   az network bastion tunnel -n oracle-bridge-bastion -g <rg> \
+//     --target-resource-id <vm-id> --resource-port 3389 --port 13389
+//   # then RDP to localhost:13389
 //
 //   az group create -n oracle-bridge-rg -l westeurope
 //   az deployment group create -g oracle-bridge-rg -f main.bicep \
-//     -p adminUsername=azureuser \
-//        adminLoginPrincipalId=$(az ad signed-in-user show --query id -o tsv) \
+//     -p adminUsername=azureuser adminPassword='<strong-password>' \
 //        foundryEndpoint=https://<your>.openai.azure.com \
 //        foundryDeployment=gpt-5.2
 
-@description('Admin username for the VM.')
+@description('Admin username for the VM (also the desktop / RDP login).')
 param adminUsername string
 
-@description('Optional SSH public key. Leave empty to rely solely on Microsoft Entra ID login over Bastion.')
+@description('Password for the VM admin account, used for the Bastion RDP login. Reset later with `az vm run-command` if needed.')
 @secure()
-param sshPublicKey string = ''
-
-@description('Enable Microsoft Entra ID SSH login (AADSSHLoginForLinux extension). Recommended.')
-param enableEntraLogin bool = true
-
-@description('Object ID of the user or group to grant Virtual Machine Administrator Login. Leave empty to assign the role yourself later.')
-param adminLoginPrincipalId string = ''
-
-@description('Principal type for the admin login role assignment.')
-@allowed([ 'User', 'Group', 'ServicePrincipal' ])
-param adminLoginPrincipalType string = 'User'
+param adminPassword string
 
 @description('Azure region. Defaults to the resource group region.')
 param location string = resourceGroup().location
@@ -56,9 +48,6 @@ var pipName      = 'oracle-bridge-pip'
 var nicName      = 'oracle-bridge-nic'
 var vmName       = 'oracle-bridge-vm'
 var bastionName  = 'oracle-bridge-bastion'
-
-// Built-in role: Virtual Machine Administrator Login
-var vmAdminLoginRoleId = '1c0163c0-47e6-4577-8991-ea5c82e286e4'
 
 resource nsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
   name: nsgName
@@ -141,15 +130,10 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
     osProfile: {
       computerName: vmName
       adminUsername: adminUsername
+      adminPassword: adminPassword
       customData: cloudInit
       linuxConfiguration: {
-        disablePasswordAuthentication: true
-        ssh: empty(sshPublicKey) ? null : {
-          publicKeys: [ {
-            path: '/home/${adminUsername}/.ssh/authorized_keys'
-            keyData: sshPublicKey
-          } ]
-        }
+        disablePasswordAuthentication: false
       }
     }
     storageProfile: {
@@ -169,32 +153,8 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
   }
 }
 
-// Microsoft Entra ID SSH login — no key files, identity-based access.
-resource aadLogin 'Microsoft.Compute/virtualMachines/extensions@2024-03-01' = if (enableEntraLogin) {
-  parent: vm
-  name: 'AADSSHLoginForLinux'
-  location: location
-  properties: {
-    publisher: 'Microsoft.Azure.ActiveDirectory'
-    type: 'AADSSHLoginForLinux'
-    typeHandlerVersion: '1.0'
-    autoUpgradeMinorVersion: true
-  }
-}
-
-// Grant the chosen principal the right to sign in to the VM as admin.
-resource vmAdminLoginAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(adminLoginPrincipalId)) {
-  name: guid(vm.id, adminLoginPrincipalId, vmAdminLoginRoleId)
-  scope: vm
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', vmAdminLoginRoleId)
-    principalId: adminLoginPrincipalId
-    principalType: adminLoginPrincipalType
-  }
-}
-
-// Azure Bastion — private SSH access, no public port 22. Standard SKU with
-// tunneling enabled so `az network bastion ssh --auth-type AAD` works.
+// Azure Bastion — private RDP access via a tunnel, no public port 22/3389.
+// Standard SKU with tunneling enabled so `az network bastion tunnel` works.
 resource bastionPip 'Microsoft.Network/publicIPAddresses@2023-11-01' = {
   name: '${bastionName}-pip'
   location: location
@@ -222,5 +182,4 @@ resource bastion 'Microsoft.Network/bastionHosts@2023-11-01' = {
 
 output publicFqdn   string = pip.properties.dnsSettings.fqdn
 output vmResourceId string = vm.id
-output bastionSshCommand string = 'az network bastion ssh -n ${bastionName} -g ${resourceGroup().name} --target-resource-id ${vm.id} --auth-type AAD --username <you@domain>'
 output bastionRdpTunnelCommand string = 'az network bastion tunnel -n ${bastionName} -g ${resourceGroup().name} --target-resource-id ${vm.id} --resource-port 3389 --port 13389  # then RDP to localhost:13389'
