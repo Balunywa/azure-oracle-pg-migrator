@@ -1,338 +1,104 @@
 #cloud-config
-# Provisions an Ubuntu 24.04 VM as a self-contained Oracle -> Azure PostgreSQL
-# migration workstation: web wizard + every CLI the 7-step flow drives.
+# Provisions an Ubuntu 24.04 VM as a VNet-integrated workstation for the
+# OFFICIAL Oracle -> Azure Database for PostgreSQL schema conversion feature.
 #
-# Tools installed:
-#   - Node.js 20 + bun (runs the web app)
-#   - Caddy (auto-HTTPS reverse proxy in front of the app)
-#   - Oracle Instant Client 21 + sqlplus (live Oracle connect)
-#   - ora2pg + Perl DBD::Oracle / DBD::Pg (real schema + data conversion)
-#   - postgresql-client-16 (psql against Azure Database for PostgreSQL)
-#   - Azure CLI (az login, az postgres ...)
-#   - code-server (browser-hosted VS Code with PostgreSQL extension)
-#   - GitHub CLI (for Copilot sign-in inside code-server)
+# It installs desktop Visual Studio Code + the Microsoft PostgreSQL extension
+# (ms-ossdata.vscode-pgsql), which runs the Migration Wizard and performs the
+# AI conversion via Microsoft Foundry, validated against your scratch database.
+# No conversion logic runs on this VM — it only hosts VS Code inside the
+# virtual network that can reach a privately networked Oracle source.
 #
-# Foundry/Copilot credentials are written to /etc/oracle-bridge/env so
-# the web app and code-server tasks can read them.
+# Installed:
+#   - Visual Studio Code (desktop) + PostgreSQL extension + GitHub Copilot
+#   - A lightweight XFCE desktop + xrdp, reached privately over Azure Bastion
+#   - Oracle Instant Client 21 (thick client mode, for native net encryption)
+#   - Azure CLI (az sign-in for Microsoft Entra ID / Foundry)
+#
+# Access: connect over Azure Bastion (SSH with Microsoft Entra ID, or RDP via
+# a Bastion tunnel). No public web ports are opened.
 
 package_update: true
 package_upgrade: true
 
 packages:
-  - git
   - curl
+  - wget
+  - gnupg
   - unzip
   - ca-certificates
-  - build-essential
-  - libaio1t64
-  - perl
-  - cpanminus
-  - libdbi-perl
-  - libdbd-pg-perl
-  - postgresql-client-16
-  - debian-keyring
-  - debian-archive-keyring
   - apt-transport-https
-  - gettext-base
+  - software-properties-common
+  - libaio1t64
+  - xfce4
+  - xfce4-goodies
+  - xrdp
+  - dbus-x11
 
 write_files:
-  - path: /etc/oracle-bridge/env
-    permissions: '0640'
-    content: |
-      # Filled in at deploy time by main.bicep
-      FOUNDRY_ENDPOINT=__FOUNDRY_ENDPOINT__
-      FOUNDRY_API_KEY=__FOUNDRY_API_KEY__
-      FOUNDRY_DEPLOYMENT=__FOUNDRY_DEPLOYMENT__
-      APP_REPO_URL=__APP_REPO_URL__
-      # ora2pg + psql consume these at runtime; fill via `oracle-bridge config`
-      ORACLE_DSN=
-      ORACLE_USER=
-      ORACLE_PASSWORD=
-      PGHOST=
-      PGUSER=
-      PGPASSWORD=
-      PGDATABASE=postgres
-      PGSSLMODE=require
-
-  - path: /etc/systemd/system/oracle-bridge-web.service
-    content: |
-      [Unit]
-      Description=Oracle -> Azure PostgreSQL migration web app
-      After=network-online.target
-      Wants=network-online.target
-
-      [Service]
-      Type=simple
-      User=azureuser
-      WorkingDirectory=/opt/oracle-bridge/app
-      EnvironmentFile=/etc/oracle-bridge/env
-      Environment=NODE_ENV=production
-      Environment=PORT=3000
-      ExecStart=/usr/local/bin/bun run start
-      Restart=always
-      RestartSec=5
-
-      [Install]
-      WantedBy=multi-user.target
-
-  - path: /etc/systemd/system/code-server.service
-    content: |
-      [Unit]
-      Description=VS Code in the browser
-      After=network-online.target
-
-      [Service]
-      Type=simple
-      User=azureuser
-      EnvironmentFile=/etc/oracle-bridge/env
-      ExecStart=/usr/bin/code-server --bind-addr 0.0.0.0:8443 --auth password /home/azureuser/workspace
-      Restart=always
-
-      [Install]
-      WantedBy=multi-user.target
-
-  - path: /etc/caddy/Caddyfile
-    content: |
-      :80 {
-        redir https://{host}{uri}
-      }
-      :443 {
-        tls internal
-
-        # Live install log, readable while the VM is still provisioning.
-        handle /provision.log {
-          root * /opt/oracle-bridge/web
-          file_server
-        }
-
-        # Once the app is up this proxies to it. While it's still
-        # installing, the proxy fails and handle_errors shows the
-        # provisioning status page instead of a bare 502.
-        handle {
-          reverse_proxy 127.0.0.1:3000
-        }
-
-        handle_errors {
-          root * /opt/oracle-bridge/web
-          rewrite * /provisioning.html
-          file_server
-        }
-      }
-
-  - path: /opt/oracle-bridge/web/provision.log
+  - path: /etc/oracle-workstation/env
     permissions: '0644'
     content: |
-      [boot] VM started. Provisioning the Oracle -> Azure PostgreSQL workstation...
+      # Convenience values for the Migration Wizard. The PostgreSQL extension
+      # also prompts for these interactively. Filled at deploy time by main.bicep.
+      FOUNDRY_ENDPOINT=__FOUNDRY_ENDPOINT__
+      FOUNDRY_DEPLOYMENT=__FOUNDRY_DEPLOYMENT__
+
+  - path: /var/log/oracle-workstation-setup.log
+    permissions: '0644'
+    content: |
+      [boot] VM started. Provisioning the schema conversion workstation...
 
   - path: /usr/local/bin/prog
     permissions: '0755'
     content: |
       #!/usr/bin/env bash
-      # Append a timestamped progress line to the live provisioning log.
-      echo "[$(date '+%H:%M:%S')] $*" >> /opt/oracle-bridge/web/provision.log
+      # Append a timestamped progress line to the setup log.
+      echo "[$(date '+%H:%M:%S')] $*" | tee -a /var/log/oracle-workstation-setup.log
 
-  - path: /opt/oracle-bridge/web/provisioning.html
-    permissions: '0644'
-    content: |
-      <!doctype html>
-      <html lang="en">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Provisioning — Oracle → Azure PostgreSQL workstation</title>
-        <style>
-          body { margin:0; background:#0b1020; color:#e6edf3; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-          header { padding:18px 24px; background:#111a33; border-bottom:1px solid #1f2a4d; }
-          header h1 { margin:0; font-size:16px; }
-          header p { margin:4px 0 0; color:#9bb0d3; font-size:12px; }
-          .spinner { display:inline-block; width:12px; height:12px; margin-right:8px; border:2px solid #3b82f6; border-top-color:transparent; border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; }
-          @keyframes spin { to { transform:rotate(360deg); } }
-          #log { padding:16px 24px; white-space:pre-wrap; word-break:break-word; }
-          .done { color:#34d399; }
-          a.btn { display:inline-block; margin:8px 24px; padding:10px 16px; background:#2563eb; color:#fff; text-decoration:none; border-radius:6px; }
-        </style>
-      </head>
-      <body>
-        <header>
-          <h1><span class="spinner" id="spin"></span>Setting up your migration workstation</h1>
-          <p id="status">Installing components — this page refreshes automatically. You can also watch the full log over SSH.</p>
-        </header>
-        <a class="btn" id="enter" href="/" style="display:none">Setup complete — open the app</a>
-        <pre id="log">Loading log…</pre>
-        <script>
-          const logEl = document.getElementById('log');
-          const statusEl = document.getElementById('status');
-          const spin = document.getElementById('spin');
-          const enter = document.getElementById('enter');
-          async function tick() {
-            try {
-              const r = await fetch('/provision.log?_=' + Date.now(), { cache: 'no-store' });
-              const text = await r.text();
-              const atBottom = window.innerHeight + window.scrollY >= document.body.offsetHeight - 40;
-              logEl.textContent = text;
-              if (atBottom) window.scrollTo(0, document.body.scrollHeight);
-              if (text.includes('PROVISION_COMPLETE')) {
-                spin.style.display = 'none';
-                statusEl.textContent = 'Setup complete. The app is starting…';
-                statusEl.className = 'done';
-                enter.style.display = 'inline-block';
-                setTimeout(() => location.assign('/'), 4000);
-                return;
-              }
-            } catch (e) { /* app may have just taken over the proxy */ location.reload(); return; }
-            setTimeout(tick, 2000);
-          }
-          tick();
-        </script>
-      </body>
-      </html>
-
-  - path: /usr/local/bin/oracle-bridge
+  - path: /usr/local/bin/workstation-status
     permissions: '0755'
     content: |
       #!/usr/bin/env bash
-      # Convenience CLI: edit creds, run preflight, run real ora2pg conversion,
-      # apply to Azure PostgreSQL.
-      set -euo pipefail
-      ENV=/etc/oracle-bridge/env
-      render_conf() {
-        # Render ora2pg.conf from the template using the current env creds.
-        envsubst < /opt/oracle-bridge/work/ora2pg.conf.template \
-          > /opt/oracle-bridge/work/ora2pg.conf
-      }
-      case "${1:-help}" in
-        config)   sudo "${EDITOR:-nano}" "$ENV" ;;
-        env)      sudo cat "$ENV" ;;
-        preflight)
-          set -a; . "$ENV"; set +a
-          cd /opt/oracle-bridge/work
-          render_conf
-          ora2pg -t SHOW_REPORT -c ora2pg.conf
-          ;;
-        convert)
-          set -a; . "$ENV"; set +a
-          cd /opt/oracle-bridge/work
-          render_conf
-          for T in TABLE SEQUENCE VIEW FUNCTION PROCEDURE TRIGGER PACKAGE; do
-            echo ">>> exporting $T"
-            ora2pg -t "$T" -c ora2pg.conf -o "out/${T,,}.sql"
-          done
-          ;;
-        apply)
-          set -a; . "$ENV"; set +a
-          cd /opt/oracle-bridge/work/out
-          for f in table.sql sequence.sql view.sql function.sql procedure.sql trigger.sql package.sql; do
-            [ -f "$f" ] && psql -v ON_ERROR_STOP=0 -f "$f"
-          done
-          ;;
-        copilot-login) sudo -u azureuser gh auth login -p https -h github.com -w ;;
-        logs)     sudo journalctl -u oracle-bridge-web -f ;;
-        status)
-          # Follow the live provisioning log until setup completes.
-          echo "Tailing provisioning log (Ctrl-C to stop)..."
-          tail -n +1 -f /opt/oracle-bridge/web/provision.log &
-          TAIL=$!
-          until grep -q PROVISION_COMPLETE /opt/oracle-bridge/web/provision.log 2>/dev/null; do sleep 2; done
-          kill "$TAIL" 2>/dev/null || true
-          echo "=== Provisioning complete ==="
-          ;;
-        *)
-          cat <<EOF
-      oracle-bridge — Oracle -> Azure PostgreSQL workstation
-
-      Commands:
-        config          Edit Oracle + Azure PG + Foundry credentials
-        env             Show current credentials
-        status          Follow live install progress until complete
-        preflight       Run ora2pg SHOW_REPORT (live Oracle)
-        convert         Export all object types via ora2pg
-        apply           psql the converted DDL into Azure PostgreSQL
-        copilot-login   Sign in to GitHub for Copilot in code-server
-        logs            Tail the web app logs
-      EOF
-        ;;
-      esac
-
-  - path: /opt/oracle-bridge/work/ora2pg.conf.template
-    content: |
-      # Generated by oracle-bridge. Re-run `oracle-bridge config` after editing.
-      ORACLE_DSN  dbi:Oracle:${ORACLE_DSN}
-      ORACLE_USER ${ORACLE_USER}
-      ORACLE_PWD  ${ORACLE_PASSWORD}
-      SCHEMA      ${ORACLE_USER}
-      PG_DSN      dbi:Pg:dbname=${PGDATABASE};host=${PGHOST};sslmode=${PGSSLMODE}
-      PG_USER     ${PGUSER}
-      PG_PWD      ${PGPASSWORD}
-      OUTPUT_DIR  /opt/oracle-bridge/work/out
-      PLSQL_PGSQL 1
-      USE_ORAFCE  1
+      # Follow setup progress over SSH until provisioning completes.
+      echo "Tailing setup log (Ctrl-C to stop)..."
+      tail -n +1 -f /var/log/oracle-workstation-setup.log &
+      TAIL=$!
+      until grep -q PROVISION_COMPLETE /var/log/oracle-workstation-setup.log 2>/dev/null; do sleep 2; done
+      kill "$TAIL" 2>/dev/null || true
+      echo "=== Setup complete. RDP in over Bastion and open VS Code to start the Migration Wizard. ==="
 
 runcmd:
-  # --- Node 20 + bun ---------------------------------------------------------
-  - prog "[1/8] Installing Node.js 20 + bun..."
-  - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  - apt-get install -y nodejs
-  - curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
-  - ln -sf /usr/local/bin/bun /usr/bin/bun
+  # --- XFCE desktop + RDP (private, via Bastion) -----------------------------
+  - prog "[1/4] Enabling XFCE desktop + RDP for private Bastion access..."
+  - echo "xfce4-session" > /home/__ADMIN_USERNAME__/.xsession
+  - chown __ADMIN_USERNAME__:__ADMIN_USERNAME__ /home/__ADMIN_USERNAME__/.xsession
+  - adduser xrdp ssl-cert || true
+  - systemctl enable --now xrdp
 
-  # --- Caddy (auto-HTTPS) ----------------------------------------------------
-  - prog "[2/8] Installing Caddy (HTTPS reverse proxy)..."
-  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy.gpg
-  - echo "deb [signed-by=/usr/share/keyrings/caddy.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy.list
-  - apt-get update && apt-get install -y caddy
-  - systemctl enable --now caddy
-  - prog "Caddy is up — this status page is now live at https://<vm>/"
+  # --- Visual Studio Code (desktop) ------------------------------------------
+  - prog "[2/4] Installing Visual Studio Code..."
+  - curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg
+  - echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
+  - apt-get update && apt-get install -y code
 
-  # --- Oracle Instant Client 21 ---------------------------------------------
-  - prog "[3/8] Installing Oracle Instant Client 21 + sqlplus..."
+  # --- PostgreSQL extension + GitHub Copilot ---------------------------------
+  - prog "[3/4] Installing the PostgreSQL extension and GitHub Copilot..."
+  - sudo -u __ADMIN_USERNAME__ -H code --install-extension ms-ossdata.vscode-pgsql || true
+  - sudo -u __ADMIN_USERNAME__ -H code --install-extension github.copilot || true
+  - sudo -u __ADMIN_USERNAME__ -H code --install-extension github.copilot-chat || true
+
+  # --- Oracle Instant Client 21 (thick client mode) --------------------------
+  - prog "[4/4] Installing Oracle Instant Client 21 (thick client mode)..."
   - mkdir -p /opt/oracle && cd /opt/oracle
-  - curl -fsSLo basic.zip   https://download.oracle.com/otn_software/linux/instantclient/2113000/instantclient-basic-linux.x64-21.13.0.0.0dbru.zip
-  - curl -fsSLo sqlplus.zip https://download.oracle.com/otn_software/linux/instantclient/2113000/instantclient-sqlplus-linux.x64-21.13.0.0.0dbru.zip
-  - curl -fsSLo sdk.zip     https://download.oracle.com/otn_software/linux/instantclient/2113000/instantclient-sdk-linux.x64-21.13.0.0.0dbru.zip
-  - unzip -oq basic.zip && unzip -oq sqlplus.zip && unzip -oq sdk.zip
+  - curl -fsSLo basic.zip https://download.oracle.com/otn_software/linux/instantclient/2113000/instantclient-basic-linux.x64-21.13.0.0.0dbru.zip
+  - unzip -oq basic.zip
   - echo /opt/oracle/instantclient_21_13 > /etc/ld.so.conf.d/oracle.conf && ldconfig
-  - ln -sf /opt/oracle/instantclient_21_13/sqlplus /usr/local/bin/sqlplus
   - ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1 || true
 
-  # --- ora2pg + DBD::Oracle --------------------------------------------------
-  - prog "[4/8] Building DBD::Oracle + ora2pg (this is the slow step)..."
-  - ORACLE_HOME=/opt/oracle/instantclient_21_13 LD_LIBRARY_PATH=/opt/oracle/instantclient_21_13 cpanm --notest DBD::Oracle
-  - cd /tmp && curl -fsSLo ora2pg.tgz https://github.com/darold/ora2pg/archive/refs/tags/v25.0.tar.gz
-  - tar xf ora2pg.tgz && cd ora2pg-25.0 && perl Makefile.PL && make && make install
-
-  # --- Azure CLI -------------------------------------------------------------
-  - prog "[5/8] Installing Azure CLI..."
+  # --- Azure CLI (Microsoft Entra ID sign-in for Foundry / target DB) --------
   - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 
-  # --- GitHub CLI (for Copilot sign-in) -------------------------------------
-  - prog "[6/8] Installing GitHub CLI..."
-  - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
-  - apt-get update && apt-get install -y gh
-
-  # --- code-server + PostgreSQL extension -----------------------------------
-  - prog "[7/8] Installing code-server + PostgreSQL & Copilot extensions..."
-  - curl -fsSL https://code-server.dev/install.sh | sh
-  - sudo -u azureuser mkdir -p /home/azureuser/.config/code-server
-  - 'sudo -u azureuser bash -c ''printf "bind-addr: 0.0.0.0:8443\nauth: password\npassword: %s\ncert: false\n" "$(openssl rand -hex 16)" > /home/azureuser/.config/code-server/config.yaml'''
-  - sudo -u azureuser code-server --install-extension ms-ossdata.vscode-pgsql || true
-  - sudo -u azureuser code-server --install-extension github.copilot || true
-  - sudo -u azureuser code-server --install-extension github.copilot-chat || true
-
-  # --- Clone and start the web app ------------------------------------------
-  - prog "[8/8] Cloning and building the web app..."
-  - mkdir -p /opt/oracle-bridge && chown -R azureuser:azureuser /opt/oracle-bridge
-  - sudo -u azureuser git clone __APP_REPO_URL__ /opt/oracle-bridge/app
-  - cd /opt/oracle-bridge/app && sudo -u azureuser bun install
-  - sudo -u azureuser bun run build --cwd /opt/oracle-bridge/app || true
-  - mkdir -p /opt/oracle-bridge/work/out && chown -R azureuser:azureuser /opt/oracle-bridge
-
-  - systemctl daemon-reload
-  - systemctl enable --now oracle-bridge-web.service
-  - systemctl enable --now code-server.service
-
-  - prog "PROVISION_COMPLETE — web app + code-server started."
+  - prog "PROVISION_COMPLETE — VS Code + PostgreSQL extension ready."
   - echo "=== Setup complete ==="
-  - echo "Web app : https://$(curl -s ifconfig.me)"
-  - echo "VS Code : https://$(curl -s ifconfig.me):8443  (password in /home/azureuser/.config/code-server/config.yaml)"
-  - echo "Next    : ssh in, run 'oracle-bridge config' to set Oracle + PG creds, then 'oracle-bridge preflight'"
+  - echo "Connect: az network bastion tunnel ... --resource-port 3389 --port 13389, then RDP to localhost:13389"
+  - echo "Then open VS Code, select the PostgreSQL extension, and start the Migration Wizard."

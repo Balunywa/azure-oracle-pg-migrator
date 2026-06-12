@@ -1,9 +1,12 @@
-// Azure VM that hosts the Oracle -> Azure PostgreSQL migration web app
-// plus every CLI tool the 7-step flow needs (ora2pg, Oracle Instant Client,
-// Node, code-server, Azure CLI, psql).
+// Azure VM that hosts a VNet-integrated workstation for the OFFICIAL Oracle ->
+// Azure Database for PostgreSQL schema conversion feature: desktop VS Code +
+// the Microsoft PostgreSQL extension (Migration Wizard / Microsoft Foundry) +
+// Oracle Instant Client + Azure CLI. The VM runs inside the virtual network so
+// it can reach a privately networked Oracle source; no conversion logic runs
+// here.
 //
 // Access model: Microsoft Entra ID SSH login over Azure Bastion (no SSH keys,
-// no public port 22). Connect with:
+// no public port 22), and RDP for the desktop via a Bastion tunnel. Connect:
 //   az network bastion ssh -n oracle-bridge-bastion -g <rg> \
 //     --target-resource-id <vm-id> --auth-type AAD --username <you@domain>
 //
@@ -12,8 +15,7 @@
 //     -p adminUsername=azureuser \
 //        adminLoginPrincipalId=$(az ad signed-in-user show --query id -o tsv) \
 //        foundryEndpoint=https://<your>.openai.azure.com \
-//        foundryApiKey=<key> foundryDeployment=gpt-5.2 \
-//        appRepoUrl=https://github.com/<you>/<repo>.git
+//        foundryDeployment=gpt-5.2
 
 @description('Admin username for the VM.')
 param adminUsername string
@@ -35,27 +37,17 @@ param adminLoginPrincipalType string = 'User'
 @description('Azure region. Defaults to the resource group region.')
 param location string = resourceGroup().location
 
-@description('VM size. D4s_v5 = 4 vCPU / 16 GB, enough for ora2pg + code-server.')
+@description('VM size. D4s_v5 = 4 vCPU / 16 GB, enough for VS Code + the desktop.')
 param vmSize string = 'Standard_D4s_v5'
 
 @description('DNS label prefix for the public IP. Must be globally unique in the region.')
 param dnsLabelPrefix string = 'oracle-bridge-${uniqueString(resourceGroup().id)}'
 
-@description('Azure AI Foundry endpoint (https://<resource>.openai.azure.com).')
-param foundryEndpoint string
-
-@description('Azure AI Foundry API key.')
-@secure()
-param foundryApiKey string
+@description('Azure AI Foundry endpoint (https://<resource>.openai.azure.com). Optional convenience value; the PostgreSQL extension also prompts for it.')
+param foundryEndpoint string = ''
 
 @description('Foundry deployment name (e.g. gpt-5.2).')
 param foundryDeployment string = 'gpt-5.2'
-
-@description('Git URL of the web app repo to clone and run on the VM.')
-param appRepoUrl string
-
-@description('CIDR allowed to reach the web app and code-server. Lock down to your IP.')
-param allowedSourceCidr string = '*'
 
 var vnetName     = 'oracle-bridge-vnet'
 var subnetName   = 'default'
@@ -72,29 +64,15 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
   name: nsgName
   location: location
   properties: {
+    // No public inbound web ports. The desktop is reached only over Azure
+    // Bastion: RDP (3389) is allowed solely from within the virtual network.
     securityRules: [
       {
-        name: 'HTTPS'
+        name: 'AllowRdpFromBastion'
         properties: {
-          priority: 1010, protocol: 'Tcp', access: 'Allow', direction: 'Inbound'
-          sourceAddressPrefix: allowedSourceCidr, sourcePortRange: '*'
-          destinationAddressPrefix: '*', destinationPortRange: '443'
-        }
-      }
-      {
-        name: 'HTTP'
-        properties: {
-          priority: 1020, protocol: 'Tcp', access: 'Allow', direction: 'Inbound'
-          sourceAddressPrefix: allowedSourceCidr, sourcePortRange: '*'
-          destinationAddressPrefix: '*', destinationPortRange: '80'
-        }
-      }
-      {
-        name: 'CodeServer'
-        properties: {
-          priority: 1030, protocol: 'Tcp', access: 'Allow', direction: 'Inbound'
-          sourceAddressPrefix: allowedSourceCidr, sourcePortRange: '*'
-          destinationAddressPrefix: '*', destinationPortRange: '8443'
+          priority: 1000, protocol: 'Tcp', access: 'Allow', direction: 'Inbound'
+          sourceAddressPrefix: 'VirtualNetwork', sourcePortRange: '*'
+          destinationAddressPrefix: '*', destinationPortRange: '3389'
         }
       }
     ]
@@ -149,11 +127,10 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-11-01' = {
   }
 }
 
-var cloudInit = base64(replace(replace(replace(replace(loadTextContent('cloud-init.yaml'),
+var cloudInit = base64(replace(replace(replace(loadTextContent('cloud-init.yaml'),
   '__FOUNDRY_ENDPOINT__',   foundryEndpoint),
-  '__FOUNDRY_API_KEY__',    foundryApiKey),
   '__FOUNDRY_DEPLOYMENT__', foundryDeployment),
-  '__APP_REPO_URL__',       appRepoUrl))
+  '__ADMIN_USERNAME__',     adminUsername))
 
 resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
   name: vmName
@@ -244,7 +221,6 @@ resource bastion 'Microsoft.Network/bastionHosts@2023-11-01' = {
 }
 
 output publicFqdn   string = pip.properties.dnsSettings.fqdn
-output webAppUrl    string = 'https://${pip.properties.dnsSettings.fqdn}'
-output codeServer   string = 'https://${pip.properties.dnsSettings.fqdn}:8443'
 output vmResourceId string = vm.id
 output bastionSshCommand string = 'az network bastion ssh -n ${bastionName} -g ${resourceGroup().name} --target-resource-id ${vm.id} --auth-type AAD --username <you@domain>'
+output bastionRdpTunnelCommand string = 'az network bastion tunnel -n ${bastionName} -g ${resourceGroup().name} --target-resource-id ${vm.id} --resource-port 3389 --port 13389  # then RDP to localhost:13389'

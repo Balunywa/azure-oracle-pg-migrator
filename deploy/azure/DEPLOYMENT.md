@@ -1,39 +1,44 @@
-# Azure VM deployment — Oracle → Azure PostgreSQL migration workstation
+# Azure VM deployment — schema conversion workstation
 
-This package provisions a single Azure VM that runs the 7-step web wizard **plus every tool the real conversion uses**, all on private Azure networking. Nothing about your Oracle schema leaves the VM.
+This package provisions a single Azure VM as a **VNet-integrated workstation** for the
+official Oracle → Azure Database for PostgreSQL schema conversion feature. The VM runs
+**desktop Visual Studio Code + the Microsoft PostgreSQL extension**, which performs the
+AI conversion through **Microsoft Foundry** and validates it against a **scratch Azure
+Database for PostgreSQL** server — exactly the local workflow, but inside the virtual
+network so it can reach a privately networked Oracle source.
+
+No custom conversion logic runs on this VM. The PostgreSQL extension's Migration Wizard
+does the work; the VM only provides a place to run it that has line of sight to Oracle.
 
 ## What gets installed on the VM
 
 | Layer | Tool | Purpose |
 |---|---|---|
-| Web UI | Node 20 + bun, the wizard app, Caddy (auto-HTTPS) | Steps 1–7 in the browser |
-| Editor | code-server (browser VS Code) + PostgreSQL extension + GitHub Copilot extensions | Microsoft's official conversion flow |
-| Oracle | Oracle Instant Client 21 + `sqlplus` + Perl `DBD::Oracle` | Live read from source Oracle |
-| Converter | `ora2pg` 25 | Real schema + data conversion |
-| Target | `postgresql-client-16` (`psql`) | Apply to Azure Database for PostgreSQL |
-| Cloud | Azure CLI, GitHub CLI | `az login`, `gh auth login` for Copilot |
-| LLM | Azure AI Foundry endpoint + key (env vars) | GPT-5.2 backing the conversion |
+| Editor | Visual Studio Code (desktop) | Hosts the official conversion experience |
+| Conversion | PostgreSQL extension (`ms-ossdata.vscode-pgsql`) | Migration Wizard + Microsoft Foundry conversion |
+| Assist | GitHub Copilot + Copilot Chat | In-editor guidance during review |
+| Oracle | Oracle Instant Client 21 (thick client mode) | Native Oracle Net encryption to the source |
+| Cloud | Azure CLI | `az login` for Microsoft Entra ID / Foundry / target DB |
+| Desktop | XFCE + xrdp | GUI for VS Code, reached privately over Bastion (RDP) |
 
-A helper CLI `oracle-bridge` wraps the 7 steps from the shell:
-
-```
-oracle-bridge config          # edit Oracle + Azure PG + Foundry creds
-oracle-bridge preflight       # ora2pg SHOW_REPORT against live Oracle
-oracle-bridge convert         # export TABLE/SEQ/VIEW/FN/PROC/TRIG/PKG via ora2pg
-oracle-bridge apply           # psql the converted DDL into Azure PostgreSQL
-oracle-bridge copilot-login   # device-flow GitHub login for Copilot in code-server
-```
+Provisioning progress is logged to `/var/log/oracle-workstation-setup.log`. Run
+`workstation-status` over SSH to follow it until `PROVISION_COMPLETE`.
 
 ## Prerequisites
 
 - Azure subscription + `az` CLI logged in
 - Permission to assign roles, and your own object ID (`az ad signed-in-user show --query id -o tsv`) for Entra ID VM login
-- Azure AI Foundry resource with a `gpt-5.2` (or equivalent) deployment — endpoint + key
-- Network path from the VM's subnet to your Oracle DB and your Azure Database for PostgreSQL (VNet peering, private endpoint, or VPN). The Bicep creates `10.42.0.0/16` — peer it with whatever holds Oracle.
+- A Microsoft Foundry resource + model deployment for the conversion (the extension prompts for the endpoint/deployment)
+- A scratch Azure Database for PostgreSQL flexible server the extension can validate against
+- Network path from the VM's subnet to your Oracle DB (VNet peering, private endpoint, or VPN). The Bicep creates `10.42.0.0/16` — peer it with whatever holds Oracle.
 
 ## Access model
 
-The VM uses **Microsoft Entra ID SSH login over Azure Bastion** — no SSH key files and no public port 22. Access is controlled by Azure RBAC (the *Virtual Machine Administrator Login* role) and is fully audited. An SSH key is optional (`sshPublicKey`) if you want a break-glass fallback.
+The VM uses **Microsoft Entra ID SSH login over Azure Bastion** — no SSH key files and no
+public port 22. The desktop is reached over **Bastion RDP** (port 3389 allowed only from
+within the virtual network). Access is controlled by Azure RBAC (the *Virtual Machine
+Administrator Login* role) and is fully audited. An SSH key is optional (`sshPublicKey`)
+as a break-glass fallback.
 
 ## Deploy
 
@@ -44,46 +49,47 @@ az deployment group create -g oracle-bridge-rg -f deploy/azure/main.bicep \
   -p adminUsername=azureuser \
      adminLoginPrincipalId="$(az ad signed-in-user show --query id -o tsv)" \
      foundryEndpoint="https://YOUR-FOUNDRY.openai.azure.com" \
-     foundryApiKey="$(cat ~/.foundry-key)" \
-     foundryDeployment="gpt-5.2" \
-     appRepoUrl="https://github.com/YOUR-ORG/YOUR-REPO.git" \
-     allowedSourceCidr="$(curl -s ifconfig.me)/32"
+     foundryDeployment="gpt-5.2"
 ```
 
-Outputs include `webAppUrl`, `codeServer`, `vmResourceId`, and `bastionSshCommand`.
+Outputs include `publicFqdn`, `vmResourceId`, `bastionSshCommand`, and `bastionRdpTunnelCommand`.
 
-## First-time wiring (one-shot)
+## Connect
 
 ```bash
-# Connect over Bastion with your Entra ID identity (no key files):
+# 1. SSH over Bastion with your Entra ID identity (no key files):
 az network bastion ssh -n oracle-bridge-bastion -g oracle-bridge-rg \
   --target-resource-id <vmResourceId> --auth-type AAD --username <you@domain>
 
-oracle-bridge config        # paste Oracle DSN/user/pwd + Azure PG host/user/pwd
-oracle-bridge preflight     # confirms ora2pg can read Oracle
+# Watch provisioning finish, then set a desktop password for RDP:
+workstation-status
+sudo passwd $USER
+
+# 2. Open an RDP tunnel through Bastion, then RDP to localhost:13389:
+az network bastion tunnel -n oracle-bridge-bastion -g oracle-bridge-rg \
+  --target-resource-id <vmResourceId> --resource-port 3389 --port 13389
 ```
 
-Then open `https://<fqdn>` for the wizard, or `https://<fqdn>:8443` for code-server (password in `/home/azureuser/.config/code-server/config.yaml`). Inside code-server run `oracle-bridge copilot-login` once to enable Copilot.
+In the RDP desktop, sign in to the workstation user, open Visual Studio Code, run
+`az login`, then open the **PostgreSQL** extension and start the **Migration Wizard**.
 
-## What the 7 steps map to
+## What you do in the workstation
 
-| Step | Web UI does | Backing tool on the VM |
+| Step | In VS Code | Backed by |
 |---|---|---|
-| 1 Intake | Capture source + target metadata | written to `/etc/oracle-bridge/env` |
-| 2 Pre-flight | Static DDL scan | `ora2pg -t SHOW_REPORT` available too |
-| 3 Sample | Validates Oracle DSN reachable | `sqlplus` smoke test |
-| 4 Config | Generates `ora2pg.conf` | rendered to `/opt/oracle-bridge/work/ora2pg.conf` |
-| 5 Convert | Per-object conversion preview | `ora2pg -t TABLE/VIEW/...` real conversion |
-| 6 Review | Diff viewer | code-server with PostgreSQL extension + Copilot |
-| 7 Apply | Deploy to Azure PostgreSQL | `psql -f out/*.sql` |
+| 1 Connect to Oracle | Add the Oracle connection in the PostgreSQL extension | Oracle Instant Client (thick mode) over the VNet |
+| 2 Connect target | Add the scratch Azure Database for PostgreSQL server | Azure CLI / Entra ID |
+| 3 Convert | Run the Migration Wizard | Microsoft Foundry deployment |
+| 4 Review | Inspect and refine the generated schema | Copilot Chat |
+| 5 Validate | Apply to the scratch database and verify | PostgreSQL extension |
 
 ## Security notes
 
-- SSH access is via Microsoft Entra ID over Azure Bastion — no public port 22 and no key files to manage. Grant access by assigning the *Virtual Machine Administrator Login* (or *User Login*) role; revoke centrally in Azure.
-- `allowedSourceCidr` (web app + code-server on 80/443/8443) defaults to `*` — **lock it down** to your office / VPN range.
-- Foundry key lives in `/etc/oracle-bridge/env` (mode 640, root:root). Rotate by editing and `systemctl restart oracle-bridge-web`.
-- The VM has a SystemAssigned managed identity — grant it `Reader` on the Azure PostgreSQL server if you want passwordless `az` flows.
-- Caddy uses `tls internal` (self-signed). For a real cert, swap the Caddyfile block for `your.domain.com { reverse_proxy 127.0.0.1:3000 }` and point DNS at the VM's FQDN.
+- SSH access is via Microsoft Entra ID over Azure Bastion — no public port 22 and no key files. Grant access by assigning the *Virtual Machine Administrator Login* role; revoke centrally in Azure.
+- No public web ports are opened. RDP (3389) is reachable only from the virtual network, via the Bastion tunnel.
+- The desktop RDP password is set by you over SSH (`sudo passwd $USER`); no secret is baked into the template.
+- The VM has a SystemAssigned managed identity — grant it the roles you need for passwordless `az` flows against the scratch database.
+- The `foundryEndpoint`/`foundryDeployment` values are written to `/etc/oracle-workstation/env` as convenience only; the extension still prompts for and manages credentials.
 
 ## Tear down
 
