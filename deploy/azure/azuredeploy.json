@@ -1,0 +1,290 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "3204508514935681857"
+    }
+  },
+  "parameters": {
+    "adminUsername": {
+      "type": "string",
+      "metadata": {
+        "description": "Admin username for the VM (also the RDP login)."
+      }
+    },
+    "adminPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Password for the VM admin account, used for the Bastion RDP login. Reset later with `az vm run-command` if needed."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region. Defaults to the resource group region."
+      }
+    },
+    "vmSize": {
+      "type": "string",
+      "defaultValue": "Standard_D4s_v5",
+      "metadata": {
+        "description": "VM size. D4s_v5 = 4 vCPU / 16 GB, enough for VS Code on Windows."
+      }
+    },
+    "dnsLabelPrefix": {
+      "type": "string",
+      "defaultValue": "[format('oracle-bridge-{0}', uniqueString(resourceGroup().id))]",
+      "metadata": {
+        "description": "DNS label prefix for the public IP. Must be globally unique in the region."
+      }
+    },
+    "foundryEndpoint": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Azure AI Foundry endpoint (https://<resource>.openai.azure.com). Optional convenience value; the PostgreSQL extension also prompts for it."
+      }
+    },
+    "foundryDeployment": {
+      "type": "string",
+      "defaultValue": "gpt-5.2",
+      "metadata": {
+        "description": "Foundry deployment name (e.g. gpt-5.2)."
+      }
+    }
+  },
+  "variables": {
+    "$fxv#0": "# Provisions a Windows Server 2022 VM as a VNet-integrated workstation for the\n# OFFICIAL Oracle -> Azure Database for PostgreSQL schema conversion feature.\n#\n# Installs desktop Visual Studio Code + the Microsoft PostgreSQL extension\n# (ms-ossdata.vscode-pgsql), which runs the Migration Wizard and performs the\n# AI conversion via Microsoft Foundry, validated against your scratch database.\n# Plus GitHub Copilot, Oracle Instant Client (thick mode), and the Azure CLI.\n# No conversion logic runs on this VM; it only hosts VS Code inside the virtual\n# network so it can reach a privately networked Oracle source.\n#\n# Run by an Azure VM Run Command at deploy time. Access is RDP only, over an\n# Azure Bastion tunnel. Progress is logged to C:\\oracle-workstation-setup.log.\n\n$ErrorActionPreference = 'Continue'\n$ProgressPreference    = 'SilentlyContinue'\n$log = 'C:\\oracle-workstation-setup.log'\n\nfunction Prog($m) { \"$(Get-Date -Format HH:mm:ss) $m\" | Tee-Object -FilePath $log -Append }\n\nProg 'Provisioning the schema conversion workstation...'\n\n# --- Visual Studio Code (desktop, system-wide) -----------------------------\nProg '[1/4] Installing Visual Studio Code...'\n$vscode = \"$env:TEMP\\vscode-setup.exe\"\nInvoke-WebRequest -Uri 'https://update.code.visualstudio.com/latest/win32-x64/stable' -OutFile $vscode\nStart-Process -Wait -FilePath $vscode -ArgumentList '/VERYSILENT','/NORESTART','/MERGETASKS=!runcode,addtopath'\n\n# --- PostgreSQL extension + GitHub Copilot ---------------------------------\n# Extensions are per-user, so install them at the first interactive logon via\n# a machine RunOnce entry (code is on the machine PATH after the system install).\nProg '[2/4] Queuing PostgreSQL extension + GitHub Copilot for first logon...'\n$extCmd = 'code --install-extension ms-ossdata.vscode-pgsql && ' +\n          'code --install-extension github.copilot && ' +\n          'code --install-extension github.copilot-chat'\n$runOnce = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce'\nNew-Item -Path $runOnce -Force | Out-Null\nSet-ItemProperty -Path $runOnce -Name 'InstallVSCodeExtensions' -Value \"cmd /c $extCmd\"\n\n# --- Oracle Instant Client 21 (thick client mode) --------------------------\nProg '[3/4] Installing Oracle Instant Client 21 (thick client mode)...'\n$oraZip = \"$env:TEMP\\instantclient.zip\"\nInvoke-WebRequest -Uri 'https://download.oracle.com/otn_software/nt/instantclient/2113000/instantclient-basic-windows.x64-21.13.0.0.0dbru.zip' -OutFile $oraZip\nExpand-Archive -Path $oraZip -DestinationPath 'C:\\oracle' -Force\n$ic = (Get-ChildItem 'C:\\oracle' -Directory | Where-Object { $_.Name -like 'instantclient*' } | Select-Object -First 1).FullName\nif ($ic) {\n  $machinePath = [Environment]::GetEnvironmentVariable('PATH','Machine')\n  [Environment]::SetEnvironmentVariable('PATH', \"$machinePath;$ic\", 'Machine')\n}\n\n# --- Azure CLI (Microsoft Entra ID sign-in for Foundry / target DB) --------\nProg '[4/4] Installing Azure CLI...'\n$azMsi = \"$env:TEMP\\azure-cli.msi\"\nInvoke-WebRequest -Uri 'https://aka.ms/installazurecliwindows' -OutFile $azMsi\nStart-Process -Wait -FilePath 'msiexec.exe' -ArgumentList '/i',\"$azMsi\",'/qn','/norestart'\n\n# --- Foundry convenience values (the extension also prompts for these) -----\n[Environment]::SetEnvironmentVariable('FOUNDRY_ENDPOINT',   '__FOUNDRY_ENDPOINT__',   'Machine')\n[Environment]::SetEnvironmentVariable('FOUNDRY_DEPLOYMENT', '__FOUNDRY_DEPLOYMENT__', 'Machine')\n\nProg 'PROVISION_COMPLETE - VS Code + PostgreSQL extension ready.'\nProg 'Connect over a Bastion RDP tunnel, then open VS Code and start the Migration Wizard.'\n",
+    "vnetName": "oracle-bridge-vnet",
+    "subnetName": "default",
+    "nsgName": "oracle-bridge-nsg",
+    "pipName": "oracle-bridge-pip",
+    "nicName": "oracle-bridge-nic",
+    "vmName": "oracle-bridge-vm",
+    "bastionName": "oracle-bridge-bastion",
+    "computerName": "ora-bridge-vm",
+    "setupScript": "[replace(replace(variables('$fxv#0'), '__FOUNDRY_ENDPOINT__', parameters('foundryEndpoint')), '__FOUNDRY_DEPLOYMENT__', parameters('foundryDeployment'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('nsgName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "AllowRdpFromBastion",
+            "properties": {
+              "priority": 1000,
+              "protocol": "Tcp",
+              "access": "Allow",
+              "direction": "Inbound",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "3389"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.42.0.0/16"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "10.42.1.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+              }
+            }
+          },
+          {
+            "name": "AzureBastionSubnet",
+            "properties": {
+              "addressPrefix": "10.42.2.0/26"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('pipName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "dnsSettings": {
+          "domainNameLabel": "[parameters('dnsLabelPrefix')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('nicName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "subnet": {
+                "id": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), variables('subnetName'))]"
+              },
+              "privateIPAllocationMethod": "Dynamic",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('vmName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "osProfile": {
+          "computerName": "[variables('computerName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "windowsConfiguration": {
+            "enableAutomaticUpdates": true,
+            "provisionVMAgent": true
+          }
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "MicrosoftWindowsServer",
+            "offer": "WindowsServer",
+            "sku": "2022-datacenter-azure-edition",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "diskSizeGB": 128,
+            "managedDisk": {
+              "storageAccountType": "Premium_LRS"
+            }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/runCommands",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}/{1}', variables('vmName'), 'install-workstation')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "source": {
+          "script": "[variables('setupScript')]"
+        },
+        "timeoutInSeconds": 3600,
+        "asyncExecution": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-pip', variables('bastionName'))]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static"
+      }
+    },
+    {
+      "type": "Microsoft.Network/bastionHosts",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('bastionName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "enableTunneling": true,
+        "ipConfigurations": [
+          {
+            "name": "IpConf",
+            "properties": {
+              "subnet": {
+                "id": "[format('{0}/subnets/AzureBastionSubnet', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', variables('bastionName')))]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-pip', variables('bastionName')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "publicFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', variables('pipName')), '2023-11-01').dnsSettings.fqdn]"
+    },
+    "vmResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
+    },
+    "bastionRdpTunnelCommand": {
+      "type": "string",
+      "value": "[format('az network bastion tunnel -n {0} -g {1} --target-resource-id {2} --resource-port 3389 --port 13389  # then RDP to localhost:13389', variables('bastionName'), resourceGroup().name, resourceId('Microsoft.Compute/virtualMachines', variables('vmName')))]"
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "config": {
+      "isWizard": false,
+      "basics": {
+        "description": "Deploy a network-isolated **Windows workstation** for the Oracle to Azure Database for PostgreSQL schema conversion feature. The VM runs Visual Studio Code with the Microsoft PostgreSQL extension inside your virtual network, reached privately over Azure Bastion (RDP). [Learn more](https://github.com/Balunywa/azure-oracle-pg-migrator)."
+      }
+    },
+    "basics": [
+      {
+        "name": "adminUsername",
+        "type": "Microsoft.Compute.UserNameTextBox",
+        "label": "Administrator username",
+        "toolTip": "The local administrator account, also used as the RDP login.",
+        "osPlatform": "Windows",
+        "constraints": {
+          "required": true
+        }
+      },
+      {
+        "name": "adminPassword",
+        "type": "Microsoft.Common.PasswordBox",
+        "label": {
+          "password": "Password",
+          "confirmPassword": "Confirm password"
+        },
+        "toolTip": "RDP login password. Must meet Windows complexity rules (12-123 chars, 3 of: lowercase, uppercase, digit, symbol).",
+        "constraints": {
+          "required": true,
+          "regex": "^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[^\\s]{12,123}$",
+          "validationMessage": "Use 12-123 characters with at least one lowercase letter, one uppercase letter, and one digit."
+        },
+        "options": {
+          "hideConfirmation": false
+        }
+      }
+    ],
+    "steps": [
+      {
+        "name": "workstation",
+        "label": "Workstation",
+        "elements": [
+          {
+            "name": "vmSize",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Virtual machine size",
+            "defaultValue": "Standard_D4s_v5 (4 vCPU, 16 GB)",
+            "toolTip": "Size of the workstation VM. D4s_v5 is enough for Visual Studio Code on Windows.",
+            "constraints": {
+              "allowedValues": [
+                { "label": "Standard_D2s_v5 (2 vCPU, 8 GB)", "value": "Standard_D2s_v5" },
+                { "label": "Standard_D4s_v5 (4 vCPU, 16 GB)", "value": "Standard_D4s_v5" },
+                { "label": "Standard_D8s_v5 (8 vCPU, 32 GB)", "value": "Standard_D8s_v5" }
+              ],
+              "required": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "conversion",
+        "label": "Conversion",
+        "elements": [
+          {
+            "name": "foundryEndpoint",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Microsoft Foundry endpoint",
+            "toolTip": "Optional. https://<resource>.openai.azure.com. The PostgreSQL extension also prompts for this.",
+            "constraints": {
+              "required": false,
+              "regex": "^$|^https://.+$",
+              "validationMessage": "Enter a URL starting with https:// or leave blank."
+            }
+          },
+          {
+            "name": "foundryDeployment",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Foundry deployment name",
+            "defaultValue": "gpt-5.2",
+            "toolTip": "The model deployment name used for the conversion.",
+            "constraints": {
+              "required": false
+            }
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "location": "[location()]",
+      "adminUsername": "[basics('adminUsername')]",
+      "adminPassword": "[basics('adminPassword')]",
+      "vmSize": "[steps('workstation').vmSize]",
+      "foundryEndpoint": "[steps('conversion').foundryEndpoint]",
+      "foundryDeployment": "[steps('conversion').foundryDeployment]"
+    }
+  }
+}

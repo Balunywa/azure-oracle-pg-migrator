@@ -42,6 +42,14 @@ only way in is the Bastion tunnel. The login password is set at deploy time
 
 ## Deploy
 
+The simplest path is the one-click **Deploy to Azure** button, which opens the Azure
+portal with a form for the admin username, password, VM size, and optional Foundry
+endpoint. No local tooling is required.
+
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#blade/Microsoft_Azure_CreateUIDef/CustomDeploymentBlade/uri/https%3A%2F%2Fraw.githubusercontent.com%2FBalunywa%2Fazure-oracle-pg-migrator%2Fmain%2Fdeploy%2Fazure%2Fazuredeploy.json/uiFormDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FBalunywa%2Fazure-oracle-pg-migrator%2Fmain%2Fdeploy%2Fazure%2FcreateUiDefinition.json)
+
+To deploy from the command line instead:
+
 ```bash
 az group create -n oracle-bridge-rg -l westeurope
 
