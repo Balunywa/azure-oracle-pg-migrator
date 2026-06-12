@@ -27,9 +27,13 @@ oracle-bridge copilot-login   # device-flow GitHub login for Copilot in code-ser
 ## Prerequisites
 
 - Azure subscription + `az` CLI logged in
-- An SSH public key
+- Permission to assign roles, and your own object ID (`az ad signed-in-user show --query id -o tsv`) for Entra ID VM login
 - Azure AI Foundry resource with a `gpt-5.2` (or equivalent) deployment — endpoint + key
 - Network path from the VM's subnet to your Oracle DB and your Azure Database for PostgreSQL (VNet peering, private endpoint, or VPN). The Bicep creates `10.42.0.0/16` — peer it with whatever holds Oracle.
+
+## Access model
+
+The VM uses **Microsoft Entra ID SSH login over Azure Bastion** — no SSH key files and no public port 22. Access is controlled by Azure RBAC (the *Virtual Machine Administrator Login* role) and is fully audited. An SSH key is optional (`sshPublicKey`) if you want a break-glass fallback.
 
 ## Deploy
 
@@ -38,7 +42,7 @@ az group create -n oracle-bridge-rg -l westeurope
 
 az deployment group create -g oracle-bridge-rg -f deploy/azure/main.bicep \
   -p adminUsername=azureuser \
-     sshPublicKey="$(cat ~/.ssh/id_rsa.pub)" \
+     adminLoginPrincipalId="$(az ad signed-in-user show --query id -o tsv)" \
      foundryEndpoint="https://YOUR-FOUNDRY.openai.azure.com" \
      foundryApiKey="$(cat ~/.foundry-key)" \
      foundryDeployment="gpt-5.2" \
@@ -46,12 +50,15 @@ az deployment group create -g oracle-bridge-rg -f deploy/azure/main.bicep \
      allowedSourceCidr="$(curl -s ifconfig.me)/32"
 ```
 
-Outputs include `webAppUrl`, `codeServer`, and `sshCommand`.
+Outputs include `webAppUrl`, `codeServer`, `vmResourceId`, and `bastionSshCommand`.
 
 ## First-time wiring (one-shot)
 
 ```bash
-ssh azureuser@<fqdn>
+# Connect over Bastion with your Entra ID identity (no key files):
+az network bastion ssh -n oracle-bridge-bastion -g oracle-bridge-rg \
+  --target-resource-id <vmResourceId> --auth-type AAD --username <you@domain>
+
 oracle-bridge config        # paste Oracle DSN/user/pwd + Azure PG host/user/pwd
 oracle-bridge preflight     # confirms ora2pg can read Oracle
 ```
@@ -72,7 +79,8 @@ Then open `https://<fqdn>` for the wizard, or `https://<fqdn>:8443` for code-ser
 
 ## Security notes
 
-- `allowedSourceCidr` defaults to `*` — **lock it down** to your office / VPN range.
+- SSH access is via Microsoft Entra ID over Azure Bastion — no public port 22 and no key files to manage. Grant access by assigning the *Virtual Machine Administrator Login* (or *User Login*) role; revoke centrally in Azure.
+- `allowedSourceCidr` (web app + code-server on 80/443/8443) defaults to `*` — **lock it down** to your office / VPN range.
 - Foundry key lives in `/etc/oracle-bridge/env` (mode 640, root:root). Rotate by editing and `systemctl restart oracle-bridge-web`.
 - The VM has a SystemAssigned managed identity — grant it `Reader` on the Azure PostgreSQL server if you want passwordless `az` flows.
 - Caddy uses `tls internal` (self-signed). For a real cert, swap the Caddyfile block for `your.domain.com { reverse_proxy 127.0.0.1:3000 }` and point DNS at the VM's FQDN.

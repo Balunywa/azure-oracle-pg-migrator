@@ -18,7 +18,7 @@ az group create -n oracle-bridge-rg -l westeurope
 
 az deployment group create -g oracle-bridge-rg -f deploy/azure/main.bicep \
   -p adminUsername=azureuser \
-     sshPublicKey="$(cat ~/.ssh/id_rsa.pub)" \
+     adminLoginPrincipalId="$(az ad signed-in-user show --query id -o tsv)" \
      foundryEndpoint="https://YOUR-FOUNDRY.openai.azure.com" \
      foundryApiKey="$(cat ~/.foundry-key)" \
      foundryDeployment="gpt-5.2" \
@@ -26,7 +26,7 @@ az deployment group create -g oracle-bridge-rg -f deploy/azure/main.bicep \
      allowedSourceCidr="$(curl -s ifconfig.me)/32"
 ```
 
-The deployment outputs `webAppUrl`, `codeServer`, and `sshCommand`. While the VM provisions, open `webAppUrl` to watch live install progress, or run `oracle-bridge status` over SSH.
+The deployment outputs `webAppUrl`, `codeServer`, `vmResourceId`, and `bastionSshCommand`. While the VM provisions, open `webAppUrl` to watch live install progress. SSH access is via Microsoft Entra ID over Azure Bastion — no SSH keys, no public port 22.
 
 See [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) for prerequisites, first-time wiring, the 7-step workflow, security notes, and tear-down.
 
@@ -44,6 +44,7 @@ See [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) for prerequisites, 
 
 ## Security
 
+- SSH is via Microsoft Entra ID over Azure Bastion — no key files, no public port 22; access is RBAC-controlled and audited.
 - Lock `allowedSourceCidr` down to your office/VPN range — it defaults to open.
 - The VM uses a system-assigned managed identity; grant it only the least-privileged roles it needs.
 - Independently validate all converted objects before deploying to production.
