@@ -1,14 +1,13 @@
-// Azure VM that hosts a VNet-integrated workstation for the OFFICIAL Oracle ->
-// Azure Database for PostgreSQL schema conversion feature: desktop VS Code +
-// the Microsoft PostgreSQL extension (Migration Wizard / Microsoft Foundry) +
-// Oracle Instant Client + Azure CLI. The VM runs inside the virtual network so
-// it can reach a privately networked Oracle source; no conversion logic runs
-// here.
+// Azure VM that hosts a VNet-integrated Windows workstation for the OFFICIAL
+// Oracle -> Azure Database for PostgreSQL schema conversion feature: desktop
+// VS Code + the Microsoft PostgreSQL extension (Migration Wizard / Microsoft
+// Foundry) + Oracle Instant Client + Azure CLI. The VM runs inside the virtual
+// network so it can reach a privately networked Oracle source; no conversion
+// logic runs here.
 //
-// Access model: RDP only, via an Azure Bastion tunnel. No SSH, no public port
-// 22, no public web ports. The desktop login password is set at deploy time
-// (adminPassword); reset it later without SSH using `az vm run-command`.
-// Connect:
+// Access model: RDP only, via an Azure Bastion tunnel. No public RDP port, no
+// public web ports. The login password is set at deploy time (adminPassword);
+// reset it later without a console using `az vm run-command`. Connect:
 //   az network bastion tunnel -n oracle-bridge-bastion -g <rg> \
 //     --target-resource-id <vm-id> --resource-port 3389 --port 13389
 //   # then RDP to localhost:13389
@@ -19,7 +18,7 @@
 //        foundryEndpoint=https://<your>.openai.azure.com \
 //        foundryDeployment=gpt-5.2
 
-@description('Admin username for the VM (also the desktop / RDP login).')
+@description('Admin username for the VM (also the RDP login).')
 param adminUsername string
 
 @description('Password for the VM admin account, used for the Bastion RDP login. Reset later with `az vm run-command` if needed.')
@@ -29,7 +28,7 @@ param adminPassword string
 @description('Azure region. Defaults to the resource group region.')
 param location string = resourceGroup().location
 
-@description('VM size. D4s_v5 = 4 vCPU / 16 GB, enough for VS Code + the desktop.')
+@description('VM size. D4s_v5 = 4 vCPU / 16 GB, enough for VS Code on Windows.')
 param vmSize string = 'Standard_D4s_v5'
 
 @description('DNS label prefix for the public IP. Must be globally unique in the region.')
@@ -48,6 +47,9 @@ var pipName      = 'oracle-bridge-pip'
 var nicName      = 'oracle-bridge-nic'
 var vmName       = 'oracle-bridge-vm'
 var bastionName  = 'oracle-bridge-bastion'
+
+// Windows computer names must be <= 15 characters.
+var computerName = 'ora-bridge-vm'
 
 resource nsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
   name: nsgName
@@ -116,10 +118,10 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-11-01' = {
   }
 }
 
-var cloudInit = base64(replace(replace(replace(loadTextContent('cloud-init.yaml'),
+// PowerShell setup script, with deploy-time values substituted in.
+var setupScript = replace(replace(loadTextContent('setup.ps1'),
   '__FOUNDRY_ENDPOINT__',   foundryEndpoint),
-  '__FOUNDRY_DEPLOYMENT__', foundryDeployment),
-  '__ADMIN_USERNAME__',     adminUsername))
+  '__FOUNDRY_DEPLOYMENT__', foundryDeployment)
 
 resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
   name: vmName
@@ -128,28 +130,41 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
   properties: {
     hardwareProfile: { vmSize: vmSize }
     osProfile: {
-      computerName: vmName
+      computerName: computerName
       adminUsername: adminUsername
       adminPassword: adminPassword
-      customData: cloudInit
-      linuxConfiguration: {
-        disablePasswordAuthentication: false
+      windowsConfiguration: {
+        enableAutomaticUpdates: true
+        provisionVMAgent: true
       }
     }
     storageProfile: {
       imageReference: {
-        publisher: 'Canonical'
-        offer:     'ubuntu-24_04-lts'
-        sku:       'server'
+        publisher: 'MicrosoftWindowsServer'
+        offer:     'WindowsServer'
+        sku:       '2022-datacenter-azure-edition'
         version:   'latest'
       }
       osDisk: {
         createOption: 'FromImage'
-        diskSizeGB: 64
+        diskSizeGB: 128
         managedDisk: { storageAccountType: 'Premium_LRS' }
       }
     }
     networkProfile: { networkInterfaces: [ { id: nic.id } ] }
+  }
+}
+
+// Install VS Code + PostgreSQL extension + Oracle Instant Client + Azure CLI.
+// Run Command takes the PowerShell inline — no storage account, no public ports.
+resource setup 'Microsoft.Compute/virtualMachines/runCommands@2024-03-01' = {
+  parent: vm
+  name: 'install-workstation'
+  location: location
+  properties: {
+    source: { script: setupScript }
+    timeoutInSeconds: 3600
+    asyncExecution: false
   }
 }
 

@@ -1,18 +1,19 @@
 # azure-oracle-pg-migrator
 
-A **VNet-integrated workstation** for the official Oracle → Azure Database for PostgreSQL
-schema conversion feature. One Azure VM runs **desktop Visual Studio Code + the Microsoft
-PostgreSQL extension**, which performs the AI conversion via **Microsoft Foundry** and
-validates it against a **scratch Azure Database for PostgreSQL** server. The VM lives
-inside the virtual network so it can reach a privately networked Oracle source that a
-laptop can't. No custom conversion logic runs here — the extension does the work.
+A **VNet-integrated Windows workstation** for the official Oracle → Azure Database for
+PostgreSQL schema conversion feature. One Windows Server 2022 VM runs **desktop Visual
+Studio Code + the Microsoft PostgreSQL extension**, which performs the AI conversion via
+**Microsoft Foundry** and validates it against a **scratch Azure Database for PostgreSQL**
+server. The VM lives inside the virtual network so it can reach a privately networked
+Oracle source that a laptop can't. No custom conversion logic runs here — the extension
+does the work.
 
 ## What's in this repo
 
 | Path | Purpose |
 |---|---|
 | [deploy/azure/main.bicep](deploy/azure/main.bicep) | Bicep template — provisions the VM, VNet, NSG, public IP, and Azure Bastion |
-| [deploy/azure/cloud-init.yaml](deploy/azure/cloud-init.yaml) | Installs VS Code + PostgreSQL extension + Oracle Instant Client + Azure CLI on a Bastion-reachable desktop |
+| [deploy/azure/setup.ps1](deploy/azure/setup.ps1) | PowerShell run by an Azure Run Command — installs VS Code + PostgreSQL extension + Oracle Instant Client + Azure CLI |
 | [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) | Detailed deployment guide and the in-editor workflow |
 | [deploy/azure/schema-conversions-vm-workstation.md](deploy/azure/schema-conversions-vm-workstation.md) | Microsoft Learn-style article describing the workstation approach |
 
@@ -29,9 +30,9 @@ az deployment group create -g oracle-bridge-rg -f deploy/azure/main.bicep \
 ```
 
 The deployment outputs `publicFqdn`, `vmResourceId`, and `bastionRdpTunnelCommand`.
-Access is **RDP only, via an Azure Bastion tunnel** — no SSH, no public port 22, no
+Access is **RDP only, via an Azure Bastion tunnel** — no SSH, no public RDP port, no
 public web ports. Open the tunnel, RDP to `localhost:13389` with the password you set,
-then use VS Code. Reset the password later without SSH via `az vm run-command`.
+then use VS Code. Reset the password later via `az vm run-command`.
 
 See [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) for prerequisites, connection
 steps, the in-editor workflow, security notes, and tear-down.
@@ -48,8 +49,8 @@ steps, the in-editor workflow, security notes, and tear-down.
 
 ## Security
 
-- RDP only, via an Azure Bastion tunnel — no SSH, no public port 22; RDP (3389) is reachable only from the virtual network.
+- RDP only, via an Azure Bastion tunnel — no SSH, no public RDP port; RDP (3389) is reachable only from the virtual network.
 - No public web ports.
-- The desktop password is a `@secure()` deploy-time parameter (not stored in the template) and can be rotated with `az vm run-command` — no SSH needed.
+- The login password is a `@secure()` deploy-time parameter (not stored in the template) and can be rotated with `az vm run-command`.
 - The VM uses a system-assigned managed identity; grant it only the least-privileged roles it needs.
 - Independently validate all converted objects before deploying to production.

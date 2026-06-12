@@ -1,11 +1,11 @@
 # Azure VM deployment — schema conversion workstation
 
-This package provisions a single Azure VM as a **VNet-integrated workstation** for the
-official Oracle → Azure Database for PostgreSQL schema conversion feature. The VM runs
-**desktop Visual Studio Code + the Microsoft PostgreSQL extension**, which performs the
-AI conversion through **Microsoft Foundry** and validates it against a **scratch Azure
-Database for PostgreSQL** server — exactly the local workflow, but inside the virtual
-network so it can reach a privately networked Oracle source.
+This package provisions a single **Windows Server 2022** Azure VM as a **VNet-integrated
+workstation** for the official Oracle → Azure Database for PostgreSQL schema conversion
+feature. The VM runs **desktop Visual Studio Code + the Microsoft PostgreSQL extension**,
+which performs the AI conversion through **Microsoft Foundry** and validates it against a
+**scratch Azure Database for PostgreSQL** server — exactly the local workflow, but inside
+the virtual network so it can reach a privately networked Oracle source.
 
 No custom conversion logic runs on this VM. The PostgreSQL extension's Migration Wizard
 does the work; the VM only provides a place to run it that has line of sight to Oracle.
@@ -19,25 +19,26 @@ does the work; the VM only provides a place to run it that has line of sight to 
 | Assist | GitHub Copilot + Copilot Chat | In-editor guidance during review |
 | Oracle | Oracle Instant Client 21 (thick client mode) | Native Oracle Net encryption to the source |
 | Cloud | Azure CLI | `az login` for Microsoft Entra ID / Foundry / target DB |
-| Desktop | XFCE + xrdp | GUI for VS Code, reached privately over Bastion (RDP) |
+| OS | Windows Server 2022 (Desktop Experience) | Built-in RDP, reached privately over Bastion |
 
-Provisioning progress is logged to `/var/log/oracle-workstation-setup.log`. Run
-`workstation-status` from a terminal in the RDP desktop to follow it until `PROVISION_COMPLETE`.
+The VM is provisioned by an Azure **Run Command** that executes `setup.ps1`. Progress is
+logged to `C:\oracle-workstation-setup.log` on the VM (ends with `PROVISION_COMPLETE`).
+The PostgreSQL extension and Copilot finish installing at your first interactive logon.
 
 ## Prerequisites
 
 - Azure subscription + `az` CLI logged in
-- A strong password for the VM admin account (used for the RDP login)
+- A strong password for the VM admin account (used for the RDP login; must meet Windows complexity rules)
 - A Microsoft Foundry resource + model deployment for the conversion (the extension prompts for the endpoint/deployment)
 - A scratch Azure Database for PostgreSQL flexible server the extension can validate against
 - Network path from the VM's subnet to your Oracle DB (VNet peering, private endpoint, or VPN). The Bicep creates `10.42.0.0/16` — peer it with whatever holds Oracle.
 
 ## Access model
 
-The VM is **RDP only, via an Azure Bastion tunnel** — no SSH, no public port 22, and no
+The VM is **RDP only, via an Azure Bastion tunnel** — no SSH, no public RDP port, and no
 public web ports. RDP (3389) is allowed solely from within the virtual network, so the
-only way in is the Bastion tunnel. The desktop login password is set at deploy time
-(`adminPassword`); reset it later without SSH using `az vm run-command`.
+only way in is the Bastion tunnel. The login password is set at deploy time
+(`adminPassword`); reset it later without a console using `az vm run-command`.
 
 ## Deploy
 
@@ -65,11 +66,12 @@ RDP to `localhost:13389`, sign in as the workstation user with the password you 
 open Visual Studio Code, run `az login`, then open the **PostgreSQL** extension and start
 the **Migration Wizard**.
 
-To reset the desktop password later without SSH:
+To reset the login password later without a console:
 
 ```bash
 az vm run-command invoke -g oracle-bridge-rg -n oracle-bridge-vm \
-  --command-id RunShellScript --scripts "echo 'azureuser:<new-password>' | chpasswd"
+  --command-id RunPowerShellScript \
+  --scripts "net user azureuser '<new-password>'"
 ```
 
 ## What you do in the workstation
@@ -84,11 +86,11 @@ az vm run-command invoke -g oracle-bridge-rg -n oracle-bridge-vm \
 
 ## Security notes
 
-- No SSH and no public port 22. The only way in is the Bastion RDP tunnel; RDP (3389) is reachable only from the virtual network.
+- No SSH and no public RDP port. The only way in is the Bastion RDP tunnel; RDP (3389) is reachable only from the virtual network.
 - No public web ports are opened.
-- The desktop password is supplied at deploy time as a `@secure()` parameter (not stored in the template) and can be rotated later with `az vm run-command` — no SSH needed.
+- The login password is supplied at deploy time as a `@secure()` parameter (not stored in the template) and can be rotated later with `az vm run-command`.
 - The VM has a SystemAssigned managed identity — grant it the roles you need for passwordless `az` flows against the scratch database.
-- The `foundryEndpoint`/`foundryDeployment` values are written to `/etc/oracle-workstation/env` as convenience only; the extension still prompts for and manages credentials.
+- The `foundryEndpoint`/`foundryDeployment` values are written to machine environment variables as convenience only; the extension still prompts for and manages credentials.
 
 ## Tear down
 
