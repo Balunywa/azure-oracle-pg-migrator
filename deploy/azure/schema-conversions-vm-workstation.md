@@ -1,129 +1,119 @@
 ---
-title: Run schema conversion on a dedicated Azure VM workstation
-description: Provision a self-contained Azure virtual machine that runs the full Oracle to Azure Database for PostgreSQL schema conversion toolchain on private Azure networking.
+title: Run schema conversion from a network-isolated workstation
+description: Run the Oracle to Azure Database for PostgreSQL schema conversion feature from a VNet-integrated Azure virtual machine when your local machine can't reach a privately networked Oracle source.
 ms.topic: how-to
 ---
 
-# Run schema conversion on a dedicated Azure VM workstation
+# Run schema conversion from a network-isolated workstation
 
-For migrations where the source Oracle database is reachable only from inside a
-private network, or where security policy requires that schema and credentials
-never leave a controlled environment, you can run the entire schema conversion
-workflow on a single, dedicated Azure virtual machine. The VM hosts the Visual
-Studio Code PostgreSQL extension and every supporting command-line tool the
-conversion uses, so the source schema is read, transformed, validated, and
-applied without leaving Azure.
+The Oracle to Azure Database for PostgreSQL schema conversion feature runs in the
+Visual Studio Code PostgreSQL extension on the machine where you start it. That
+machine must reach three endpoints during a conversion: the source Oracle
+database, the Azure Database for PostgreSQL flexible server that hosts the scratch
+database, and the Microsoft Foundry deployment. For more information, see
+[Security and networking](schema-conversions-overview.md#security-and-networking)
+and [Secure the conversion workflow](schema-conversions-best-practices.md#secure-the-conversion-workflow).
 
-This approach complements the standard local Visual Studio Code workflow. Use it
-when you need a reproducible, network-isolated workstation rather than a developer
-laptop with direct line of sight to both Oracle and Azure Database for PostgreSQL
-flexible server.
+In many enterprises the source Oracle database is reachable only from inside a
+private virtual network, and a local machine has no route to it. Rather than open
+inbound access to Oracle, run the PostgreSQL extension from a Visual Studio Code
+instance that already lives inside the network the source database trusts. This
+article describes how to host that Visual Studio Code instance on a
+VNet-integrated Azure virtual machine, so the supported conversion feature runs
+unchanged with line of sight to all three endpoints.
+
+> [!NOTE]
+> This approach changes only *where* Visual Studio Code runs. The conversion is
+> still performed by the PostgreSQL extension with Microsoft Foundry and validated
+> in a scratch database, exactly as described in
+> [What is Oracle to Azure Database for PostgreSQL schema conversion?](schema-conversions-overview.md).
+
+## When to use a network-isolated workstation
+
+Consider a VNet-integrated workstation when:
+
+- The source Oracle database accepts connections only from inside a virtual network or on-premises network, and your local machine has no route to it.
+- Security policy requires that the conversion run inside a controlled Azure boundary rather than on a personal device.
+- You want a reproducible, prebuilt environment that already has the Visual Studio Code PostgreSQL extension and the required Oracle connectivity prerequisites installed.
+
+If your local machine can already reach the source Oracle database, the scratch
+database, and Microsoft Foundry, use the standard local workflow instead. See
+[Install the extension](schema-conversions-overview.md#install-the-extension).
 
 ## Architecture
 
-The workstation packages the conversion components onto one Ubuntu virtual
-machine that sits inside a virtual network you control:
+The workstation is a virtual machine that runs Visual Studio Code inside the
+virtual network that the source Oracle database trusts. The conversion components
+are unchanged from the standard flow:
 
-- **Source Oracle database**: Reached over private networking (virtual network peering, private endpoint, or VPN) from the VM's subnet.
-- **Conversion VM**: An Azure virtual machine that runs the PostgreSQL extension in browser-hosted Visual Studio Code, plus the Oracle and PostgreSQL clients and the conversion engine.
-- **Azure Database for PostgreSQL flexible server**: Hosts the scratch schemas used for validation and the final target database.
+- **Source Oracle database**: Reached over private networking (virtual network peering, a private endpoint, or a site-to-site or point-to-site VPN) from the workstation's subnet.
+- **Workstation virtual machine**: An Azure virtual machine inside the virtual network. It runs Visual Studio Code with the PostgreSQL extension and, when required, Oracle Instant Client for thick client mode.
+- **Azure Database for PostgreSQL flexible server**: Hosts the scratch schemas the tool uses to validate converted objects, and the production target.
 - **Microsoft Foundry**: Provides the language models that power AI-driven schema transformation, reached over a private endpoint.
-- **GitHub Copilot agent mode**: Runs inside the browser-hosted editor to help resolve review tasks.
 
-## What gets installed on the VM
+The workstation needs a network path to each endpoint. Peer or connect its
+virtual network with the network that holds Oracle, and use a private endpoint or
+firewall rules to reach the Azure Database for PostgreSQL flexible server, as
+described in
+[Use private endpoints or firewall rules for the target](schema-conversions-best-practices.md#use-private-endpoints-or-firewall-rules-for-the-target).
 
-The VM is provisioned from cloud-init so the toolchain is identical on every
-deployment:
+## Prerequisites
 
-| Layer | Tool | Purpose |
-|---|---|---|
-| Editor | Browser-hosted Visual Studio Code, PostgreSQL extension, GitHub Copilot extensions | The Microsoft schema conversion workflow |
-| Oracle connectivity | Oracle Instant Client and `sqlplus` | Read schema objects from the source Oracle database |
-| PostgreSQL connectivity | `psql` (PostgreSQL client) | Apply converted objects to Azure Database for PostgreSQL flexible server |
-| Cloud and identity | Azure CLI, GitHub CLI | `az` sign-in for Azure resources and `gh` sign-in for Copilot |
-| Language models | Microsoft Foundry endpoint and credentials (environment variables) | Backs AI-driven schema transformation |
-| Web front end | Node.js runtime and reverse proxy with automatic HTTPS | Optional guided wizard for the conversion steps |
-
-> [!NOTE]
-> Oracle Instant Client enables thick client mode. Install it when your source
-> Oracle environment requires native network encryption. For details, see
-> [Oracle connectivity modes](schema-conversions-overview.md#oracle-connectivity-modes).
-
-## How it works
-
-The VM-hosted flow follows the same intelligent, multistage approach as the
-standard workflow, with each stage running inside the isolated environment:
-
-- **Connection and discovery**: The PostgreSQL extension connects to the source Oracle database over private networking and catalogs the schema objects.
-- **AI-powered transformation**: Schema conversion agents call language models in Microsoft Foundry over a private endpoint to transform Oracle constructs into PostgreSQL-compatible equivalents.
-- **Validation in scratch schemas**: Converted objects are tested against scratch schemas on the Azure Database for PostgreSQL flexible server you designate.
-- **Review and guided resolution**: GitHub Copilot agent mode runs in the browser-hosted editor on the VM to help complete flagged review tasks.
-- **Output and apply**: Validated objects are written as PostgreSQL `.sql` files and applied to the target database with `psql`, all from within the VM.
-
-## Deploy the workstation
-
-You deploy the VM with an Azure Resource Manager template (Bicep). The deployment
-creates the virtual network, network security group, public IP, and VM, and runs
-cloud-init to install the toolchain.
-
-### Prerequisites
-
-- An Azure subscription with the Azure CLI installed and signed in.
-- An SSH public key for the VM administrator account.
-- A Microsoft Foundry resource with a model deployment (endpoint and credentials).
-- A network path from the VM's subnet to both the source Oracle database and the target Azure Database for PostgreSQL flexible server.
-
-### Deployment steps
-
-1. Create a resource group:
-
-   ```bash
-   az group create --name <resource-group> --location <region>
-   ```
-
-1. Deploy the template, supplying your SSH key, Foundry endpoint, and the CIDR range allowed to reach the VM:
-
-   ```bash
-   az deployment group create \
-     --resource-group <resource-group> \
-     --template-file main.bicep \
-     --parameters adminUsername=<admin-user> \
-                  sshPublicKey="$(cat ~/.ssh/id_rsa.pub)" \
-                  foundryEndpoint="https://<resource>.openai.azure.com" \
-                  foundryDeployment="<deployment-name>" \
-                  allowedSourceCidr="<your-ip>/32"
-   ```
-
-1. After the deployment finishes, use the template outputs to reach the workstation: the web wizard URL, the browser-hosted editor URL, and the SSH command.
+- An Azure subscription, and permission to create a virtual machine and supporting network resources in it.
+- A virtual network that has, or can be peered to, a route to the source Oracle database.
+- An Azure Database for PostgreSQL flexible server to use as the scratch database, prepared as described in [Prepare the scratch database](schema-conversions-best-practices.md#prepare-the-scratch-database).
+- A Microsoft Foundry resource with a model deployment, and its endpoint. For authentication options, see [Authentication for Microsoft Foundry](schema-conversions-overview.md#authentication-for-microsoft-foundry).
+- The source Oracle privileges and session settings described in [Prepare the source Oracle environment](schema-conversions-best-practices.md#prepare-the-source-oracle-environment).
 
 > [!IMPORTANT]
-> The `allowedSourceCidr` parameter controls who can reach the VM. Restrict it to
-> your office or VPN range. Don't leave it open to the internet.
+> Schema conversion is supported on Windows and Linux only, and isn't supported
+> on ARM64. Choose a virtual machine size and image that match a supported
+> platform. For more information, see
+> [Schema conversion limitations](schema-conversions-limitations.md).
 
-## Security and networking
+## Create the workstation
 
-Run the workstation under the same security principles as the standard workflow,
-and take advantage of the isolated VM to keep schema and credentials inside your
-Azure boundary:
+1. **Create a virtual machine in the right virtual network**: Deploy a Windows or Linux virtual machine into the virtual network that can reach the source Oracle database. Place it in a subnet that has, or can be peered to, a route to Oracle.
 
-- **Private endpoints**: Connect to Microsoft Foundry by using a private endpoint. For more information, see [Configure a private link for Microsoft Foundry](/azure/ai-foundry/how-to/configure-private-link).
-- **Credential storage**: Foundry and database credentials are stored in a root-owned environment file with restricted permissions. Rotate them by updating the file and restarting the service.
-- **Managed identity**: The VM uses a system-assigned managed identity. Grant it the least-privileged role it needs on your Azure resources to enable passwordless access where possible.
-- **Transport security**: The reverse proxy uses HTTPS. For a trusted certificate, point a DNS name at the VM and configure the proxy for that hostname.
-- **Customer validation responsibility**: As with any AI-assisted conversion, independently validate all converted objects and review-task resolutions before you deploy to production.
+1. **Connect to the virtual machine privately**: Connect by using Azure Bastion with Microsoft Entra ID authentication, so you don't expose a public management port or manage SSH keys. For more information, see [What is Azure Bastion?](/azure/bastion/bastion-overview).
 
-## Tear down
+1. **Install Visual Studio Code and the PostgreSQL extension**: On the virtual machine, install Visual Studio Code and the PostgreSQL extension published by Microsoft, as described in [Install the extension](schema-conversions-overview.md#install-the-extension).
 
-When the migration is complete, delete the resource group to remove the VM and
-all associated networking resources:
+1. **Install Oracle Instant Client if thick client mode is required**: If your source Oracle environment uses native network encryption, install Oracle Instant Client on the virtual machine. To determine whether thick client mode is required, see [Oracle connectivity modes](schema-conversions-overview.md#oracle-connectivity-modes).
 
-```bash
-az group delete --name <resource-group> --yes
-```
+1. **Confirm connectivity to all three endpoints**: From the virtual machine, verify that Visual Studio Code can reach the source Oracle database, the Azure Database for PostgreSQL flexible server, and the Microsoft Foundry endpoint before you start a conversion, as described in [Confirm network connectivity from Visual Studio Code](schema-conversions-best-practices.md#confirm-network-connectivity-from-visual-studio-code).
+
+## Run the conversion
+
+After the workstation can reach all three endpoints, run the conversion exactly
+as you would on a local machine. Open the PostgreSQL extension, start the
+Migration Wizard, and follow the standard workflow to connect to Oracle,
+configure the scratch database and Microsoft Foundry, convert the schema, resolve
+review tasks with GitHub Copilot agent mode, and generate the PostgreSQL output
+files. For the end-to-end steps, see
+[Tutorial: Convert Oracle schemas to Azure Database for PostgreSQL](schema-conversions-tutorial.md).
+
+## Security considerations
+
+A VNet-integrated workstation lets you apply the controls in
+[Secure the conversion workflow](schema-conversions-best-practices.md#secure-the-conversion-workflow)
+inside an Azure boundary:
+
+- **Private connectivity**: Keep the source Oracle database, the scratch database, and Microsoft Foundry on private endpoints or restricted firewall rules. The workstation reaches them from inside the virtual network, so you don't open inbound access to Oracle.
+- **Identity-based access to the workstation**: Connect through Azure Bastion with Microsoft Entra ID authentication, and control who can sign in by using Azure role-based access control.
+- **Microsoft Entra ID for the target database**: Connect to Azure Database for PostgreSQL flexible server with Microsoft Entra authentication instead of passwords. See [Use Microsoft Entra ID authentication](schema-conversions-best-practices.md#use-microsoft-entra-id-authentication).
+- **Credential handling**: Don't embed Oracle or PostgreSQL credentials in plain text. Store them in Azure Key Vault and reference them at connect time, as described in [Manage credentials safely](schema-conversions-best-practices.md#manage-credentials-safely).
+- **Customer validation responsibility**: Independently validate all converted objects and review-task resolutions before you deploy to production.
+
+## Clean up
+
+When the migration is complete, delete the workstation virtual machine and any
+networking resources you created solely for it, so you don't continue to incur
+cost.
 
 ## Related content
 
 - [What is Oracle to Azure Database for PostgreSQL schema conversion?](schema-conversions-overview.md)
+- [Tutorial: Convert Oracle schemas to Azure Database for PostgreSQL](schema-conversions-tutorial.md)
 - [Best practices for Oracle to Azure Database for PostgreSQL schema conversion](schema-conversions-best-practices.md)
-- [Review tasks and output folders for Oracle to Azure Database for PostgreSQL schema conversion](schema-conversions-review-tasks-artifacts.md)
 - [Schema conversion limitations](schema-conversions-limitations.md)
