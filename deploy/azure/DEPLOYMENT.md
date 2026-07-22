@@ -29,6 +29,7 @@ The PostgreSQL extension and Copilot finish installing at your first interactive
 
 - Azure subscription + `az` CLI logged in
 - A strong password for the VM admin account (used for the RDP login; must meet Windows complexity rules)
+- Enough vCPU quota for the chosen VM size in your region. The default `Standard_D4s_v5` needs the **Dsv5** family; if you have no quota for it, check `az vm list-usage -l <region>` and pass a size from a family you do have (for example `-p vmSize=Standard_D4s_v3` or `Standard_D4as_v5`)
 - A Microsoft Foundry resource + model deployment for the conversion (the extension prompts for the endpoint/deployment)
 - A scratch Azure Database for PostgreSQL flexible server the extension can validate against
 - Network path from the VM's subnet to your Oracle DB (VNet peering, private endpoint, or VPN). The Bicep creates `10.42.0.0/16` — peer it with whatever holds Oracle.
@@ -73,6 +74,11 @@ az network bastion tunnel -n oracle-bridge-bastion -g oracle-bridge-rg \
 RDP to `localhost:13389`, sign in as the workstation user with the password you set,
 open Visual Studio Code, run `az login`, then open the **PostgreSQL** extension and start
 the **Migration Wizard**.
+
+You need an RDP client: on Windows use the built-in Remote Desktop Connection; on macOS
+or Linux install the **Windows App** (formerly Microsoft Remote Desktop). The
+`az network bastion tunnel` command requires the Bastion **Standard** SKU with tunneling
+enabled — this deployment configures both.
 
 To reset the login password later without a console:
 

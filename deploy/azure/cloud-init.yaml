@@ -1,4 +1,10 @@
 #cloud-config
+# NOTE: OPTIONAL reference only — NOT used by the default deployment.
+# main.bicep / azuredeploy.json provision a WINDOWS VM and run setup.ps1; they do
+# not reference this file. To use it, pass it as custom-data to your own Ubuntu VM
+# and substitute __ADMIN_USERNAME__, __FOUNDRY_ENDPOINT__, and __FOUNDRY_DEPLOYMENT__
+# (for example with sed) before deployment.
+#
 # Provisions an Ubuntu 24.04 VM as a VNet-integrated workstation for the
 # OFFICIAL Oracle -> Azure Database for PostgreSQL schema conversion feature.
 #

@@ -27,6 +27,7 @@ to open the Azure Bastion RDP tunnel and start the Migration Wizard.
 | [deploy/azure/createUiDefinition.json](deploy/azure/createUiDefinition.json) | Portal form definition for the one-click deployment |
 | [deploy/azure/main.bicep](deploy/azure/main.bicep) | Bicep source — provisions the VM, VNet, NSG, public IP, and Azure Bastion |
 | [deploy/azure/setup.ps1](deploy/azure/setup.ps1) | PowerShell run by an Azure Run Command — installs VS Code + PostgreSQL extension + Oracle Instant Client + Azure CLI |
+| [deploy/azure/cloud-init.yaml](deploy/azure/cloud-init.yaml) | Optional **reference** cloud-init for a Linux workstation. Not used by the default Windows deployment; adapt it if you provision an Ubuntu VM instead |
 | [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) | Detailed deployment guide and the in-editor workflow |
 | [deploy/azure/schema-conversions-vm-workstation.md](deploy/azure/schema-conversions-vm-workstation.md) | Microsoft Learn-style article describing the workstation approach |
 
@@ -43,6 +44,11 @@ az deployment group create -g oracle-bridge-rg -f deploy/azure/main.bicep \
      foundryEndpoint="https://YOUR-FOUNDRY.openai.azure.com" \
      foundryDeployment="gpt-5.2"
 ```
+
+> If the deployment fails preflight with a `QuotaExceeded` error for the `Dsv5`
+> family, your subscription has no quota for the default size in that region. Run
+> `az vm list-usage -l <region>` and add `vmSize=<size>` for a family you do have
+> (for example `Standard_D4s_v3` or `Standard_D4as_v5`).
 
 The deployment outputs `publicFqdn`, `vmResourceId`, and `bastionRdpTunnelCommand`.
 Access is **RDP only, via an Azure Bastion tunnel** — no SSH, no public RDP port, no

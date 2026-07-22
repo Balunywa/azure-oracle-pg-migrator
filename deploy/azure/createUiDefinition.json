@@ -27,7 +27,7 @@
           "password": "Password",
           "confirmPassword": "Confirm password"
         },
-        "toolTip": "RDP login password. Must meet Windows complexity rules (12-123 chars, 3 of: lowercase, uppercase, digit, symbol).",
+        "toolTip": "RDP login password. 12-123 characters, and must include at least one lowercase letter, one uppercase letter, and one digit.",
         "constraints": {
           "required": true,
           "regex": "^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[^\\s]{12,123}$",
@@ -48,12 +48,14 @@
             "type": "Microsoft.Common.DropDown",
             "label": "Virtual machine size",
             "defaultValue": "Standard_D4s_v5 (4 vCPU, 16 GB)",
-            "toolTip": "Size of the workstation VM. D4s_v5 is enough for Visual Studio Code on Windows.",
+            "toolTip": "Size of the workstation VM. D4s_v5 is enough for Visual Studio Code on Windows. Pick a family you have vCPU quota for in this region; if the Dsv5 sizes fail preflight with a quota error, choose a Dsv3 or Dasv5 size instead.",
             "constraints": {
               "allowedValues": [
                 { "label": "Standard_D2s_v5 (2 vCPU, 8 GB)", "value": "Standard_D2s_v5" },
                 { "label": "Standard_D4s_v5 (4 vCPU, 16 GB)", "value": "Standard_D4s_v5" },
-                { "label": "Standard_D8s_v5 (8 vCPU, 32 GB)", "value": "Standard_D8s_v5" }
+                { "label": "Standard_D8s_v5 (8 vCPU, 32 GB)", "value": "Standard_D8s_v5" },
+                { "label": "Standard_D4as_v5 (4 vCPU, 16 GB, AMD)", "value": "Standard_D4as_v5" },
+                { "label": "Standard_D4s_v3 (4 vCPU, 16 GB)", "value": "Standard_D4s_v3" }
               ],
               "required": true
             }
