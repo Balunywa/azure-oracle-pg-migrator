@@ -87,10 +87,14 @@ stages, and wait for **Migration Complete**. Select **View Migration Report**.
 
 ### 5. Review, triage, and resolve
 
-1. Read `reports/customer_summary.md` for the readiness decision, success percentage, and
-   the count of **Mandatory** tasks.
-2. In the **Schema Review** pane, set **Status = Pending** and **Priority = Mandatory**, and
-   open each flagged task.
+1. Read `reports/customer_summary.md` first for the readiness decision, success percentage,
+   and the count of **Mandatory** tasks. For a per-object breakdown with DDL snippets, open
+   `reports/technical_conversion_report.md`; treat `reports/review_tasks.md` as an offline
+   reference and resolve tasks from the Schema Review pane instead.
+2. In the **Schema Review** pane, start in the **Grouped** view to scan tasks by behavioral
+   category (for example *Numeric Semantics*, *Empty String / NULL*), then switch to the
+   **Tasks** view and filter **Status = Pending**, **Priority = Mandatory** to work through
+   them one by one.
 3. Select **Run Task** to open **GitHub Copilot agent mode** with the source and generated
    DDL loaded. Review the proposed fix, apply it to the `.sql` file under
    `postgres_ddl/<schema>/<object_type>/`, run it against the scratch database to confirm it
