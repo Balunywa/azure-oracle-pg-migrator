@@ -27,11 +27,11 @@
           "password": "Password",
           "confirmPassword": "Confirm password"
         },
-        "toolTip": "Login password. Reused for the workstation RDP login and the Oracle and PostgreSQL admin accounts. 12-123 characters, and must include at least one lowercase letter, one uppercase letter, and one digit.",
+        "toolTip": "Login password. Reused for the workstation RDP login and the Oracle and PostgreSQL admin accounts. 12-123 characters, and must include at least one lowercase letter, one uppercase letter, and one digit. The double-quote character is not allowed.",
         "constraints": {
           "required": true,
-          "regex": "^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[^\\s]{12,123}$",
-          "validationMessage": "Use 12-123 characters with at least one lowercase letter, one uppercase letter, and one digit."
+          "regex": "^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[^\\s\"]{12,123}$",
+          "validationMessage": "Use 12-123 characters (no spaces or double-quotes) with at least one lowercase letter, one uppercase letter, and one digit."
         },
         "options": {
           "hideConfirmation": false
