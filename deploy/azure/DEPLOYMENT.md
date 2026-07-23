@@ -143,6 +143,15 @@ az vm run-command invoke -g oracle-bridge-rg -n oracle-bridge-vm \
 
 ## Tear down
 
+Run the teardown script — it deletes the resource group and purges the soft-deleted
+Azure OpenAI account so its name is freed:
+
+```bash
+./deploy/azure/teardown.sh oracle-bridge-rg
+```
+
+Or do it by hand:
+
 ```bash
 az group delete -n oracle-bridge-rg --yes
 ```

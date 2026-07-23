@@ -28,6 +28,28 @@ Azure OpenAI deployment — is created for you. No CLI required.
 After the deployment finishes, see [Connect to the workstation](deploy/azure/DEPLOYMENT.md#connect)
 to open the Azure Bastion RDP tunnel and start the Migration Wizard.
 
+## Tear down
+
+When you're done, remove everything by deleting the resource group. Azure has no native
+one-click *delete* URL (by design), so this button opens the **Resource groups** blade in
+the portal — pick the lab's group (for example `oracle-bridge-rg`) and choose
+**Delete resource group**:
+
+[![Delete resources](https://img.shields.io/badge/Delete-resource%20group-critical?style=for-the-badge&logo=microsoftazure&logoColor=white)](https://portal.azure.com/#browse/resourcegroups)
+
+Or run the teardown script (deletes the group and purges the soft-deleted Azure OpenAI
+account so its name is freed):
+
+```bash
+./deploy/azure/teardown.sh oracle-bridge-rg
+```
+
+Equivalent one-liner:
+
+```bash
+az group delete -n oracle-bridge-rg --yes
+```
+
 ## What's in this repo
 
 | Path | Purpose |
@@ -36,6 +58,7 @@ to open the Azure Bastion RDP tunnel and start the Migration Wizard.
 | [deploy/azure/createUiDefinition.json](deploy/azure/createUiDefinition.json) | Portal form definition for the one-click deployment |
 | [deploy/azure/main.bicep](deploy/azure/main.bicep) | Bicep source — provisions the whole lab: VNet/NSG/Bastion, the Windows workstation, the Oracle source VM, the PostgreSQL flexible server, and the Azure OpenAI deployment |
 | [deploy/azure/setup.ps1](deploy/azure/setup.ps1) | PowerShell run by an Azure Run Command — installs VS Code + PostgreSQL extension + Oracle Instant Client + Azure CLI on the workstation |
+| [deploy/azure/teardown.sh](deploy/azure/teardown.sh) | Deletes the resource group and purges the soft-deleted Azure OpenAI account |
 | [deploy/azure/cloud-init.yaml](deploy/azure/cloud-init.yaml) | Cloud-init for the **Oracle source VM** — installs Docker, runs Oracle Database Free 23ai, and seeds the sample HR schema on first boot |
 | [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) | Detailed deployment guide and the in-editor workflow |
 | [deploy/azure/schema-conversions-vm-workstation.md](deploy/azure/schema-conversions-vm-workstation.md) | Microsoft Learn-style article describing the workstation approach |
