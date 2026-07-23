@@ -1,22 +1,26 @@
-// Azure VM that hosts a VNet-integrated Windows workstation for the OFFICIAL
-// Oracle -> Azure Database for PostgreSQL schema conversion feature: desktop
-// VS Code + the Microsoft PostgreSQL extension (Migration Wizard / Microsoft
-// Foundry) + Oracle Instant Client + Azure CLI. The VM runs inside the virtual
-// network so it can reach a privately networked Oracle source; no conversion
-// logic runs here.
+// Complete Oracle -> Azure Database for PostgreSQL schema-conversion lab in one
+// deployment. Everything runs inside a single virtual network, reached privately
+// over Azure Bastion:
+//   * Windows workstation: desktop VS Code + the Microsoft PostgreSQL extension
+//     (Migration Wizard) + Oracle Instant Client + Azure CLI.
+//   * Oracle source: Ubuntu VM running Oracle Database Free 23ai in a container,
+//     seeded with a sample HR schema (service FREEPDB1, port 1521).
+//   * PostgreSQL target: Azure Database for PostgreSQL flexible server (private
+//     access, no public endpoint).
+//   * AI conversion: Azure OpenAI (Microsoft Foundry) account + model deployment;
+//     the workstation's managed identity is granted key-less access.
 //
 // Access model: RDP only, via an Azure Bastion tunnel. No public RDP port, no
-// public web ports. The login password is set at deploy time (adminPassword);
-// reset it later without a console using `az vm run-command`. Connect:
+// public web ports; the databases are reachable only from within the VNet. The
+// admin password is set at deploy time (adminPassword) and reused for the Oracle
+// and PostgreSQL admin accounts. Connect after deployment:
 //   az network bastion tunnel -n oracle-bridge-bastion -g <rg> \
 //     --target-resource-id <vm-id> --resource-port 3389 --port 13389
 //   # then RDP to localhost:13389
 //
 //   az group create -n oracle-bridge-rg -l westeurope
 //   az deployment group create -g oracle-bridge-rg -f main.bicep \
-//     -p adminUsername=azureuser adminPassword='<strong-password>' \
-//        foundryEndpoint=https://<your>.openai.azure.com \
-//        foundryDeployment=gpt-5.2
+//     -p adminUsername=azureuser adminPassword='<strong-password>'
 
 @description('Admin username for the workstation VM (RDP login) and the Oracle and PostgreSQL admin accounts.')
 param adminUsername string

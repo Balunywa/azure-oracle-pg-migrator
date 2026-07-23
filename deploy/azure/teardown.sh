@@ -10,13 +10,16 @@
 #   ./teardown.sh my-rg --yes           # no confirmation prompt
 set -euo pipefail
 
-RG="${1:-oracle-bridge-rg}"
+RG=""
 ASSUME_YES="no"
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) ASSUME_YES="yes" ;;
+    -*)       echo "Unknown option: $arg" >&2; exit 2 ;;
+    *)        [ -z "$RG" ] && RG="$arg" ;;
   esac
 done
+RG="${RG:-oracle-bridge-rg}"
 
 if ! az group show -n "$RG" >/dev/null 2>&1; then
   echo "Resource group '$RG' does not exist. Nothing to do."
@@ -36,19 +39,29 @@ if [ "$ASSUME_YES" != "yes" ]; then
 fi
 
 # Capture Azure OpenAI accounts (name + location) before deleting the group,
-# so we can purge them from the soft-delete state afterwards.
-mapfile -t OPENAI < <(az cognitiveservices account list -g "$RG" \
+# so we can purge them from the soft-delete state afterwards. Uses a while-read
+# loop instead of 'mapfile' so it also works on the older bash on macOS.
+OPENAI=()
+while IFS= read -r line; do
+  [ -n "$line" ] && OPENAI+=("$line")
+done < <(az cognitiveservices account list -g "$RG" \
   --query "[].{n:name,l:location}" -o tsv 2>/dev/null || true)
 
 echo "Deleting resource group '$RG'..."
 az group delete -n "$RG" --yes
 
-for row in "${OPENAI[@]}"; do
+for row in "${OPENAI[@]:-}"; do
   [ -z "$row" ] && continue
   name="$(echo "$row" | cut -f1)"
   loc="$(echo "$row" | cut -f2)"
   echo "Purging soft-deleted Azure OpenAI account '$name' in '$loc'..."
-  az cognitiveservices account purge -n "$name" -g "$RG" -l "$loc" >/dev/null 2>&1 || true
+  # The account may take a moment to reach a terminal state after group deletion.
+  for _ in 1 2 3 4 5 6; do
+    if az cognitiveservices account purge -n "$name" -g "$RG" -l "$loc" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 10
+  done
 done
 
 echo "Teardown complete."
