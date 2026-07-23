@@ -28,6 +28,92 @@ Azure OpenAI deployment — is created for you. No CLI required.
 After the deployment finishes, see [Connect to the workstation](deploy/azure/DEPLOYMENT.md#connect)
 to open the Azure Bastion RDP tunnel and start the Migration Wizard.
 
+## After deployment: run the schema conversion
+
+The template stands up the whole environment, but the conversion itself is an **interactive**
+task you run inside VS Code on the workstation — the Migration Wizard and GitHub Copilot
+can't run headlessly. Follow these steps once the deployment finishes.
+
+### 1. Collect your connection values
+
+Every value the wizard asks for is a deployment output. Open the deployment's **Outputs**
+in the portal, or run:
+
+```bash
+az deployment group show -g oracle-bridge-rg -n <deployment-name> \
+  --query properties.outputs -o jsonc
+```
+
+| Wizard field | Value | Output |
+|---|---|---|
+| Oracle host | e.g. `10.42.3.4` | `oraclePrivateIp` |
+| Oracle port | `1521` | (fixed) |
+| Oracle service name | `FREEPDB1` | `oracleServiceName` |
+| Oracle migration user | `MIG` + your deploy password | seeded, read-only |
+| PostgreSQL server | e.g. `orabridge-pg-xxxx.postgres.database.azure.com` | `postgresFqdn` |
+| PostgreSQL admin | `azureuser` + your deploy password | `postgresAdmin` |
+| Foundry endpoint | e.g. `https://orabridge-oai-xxxx.openai.azure.com/` | `foundryEndpoint` |
+| Foundry deployment | `gpt-5-mini` | `foundryDeployment` |
+
+The Foundry endpoint and deployment are also set on the workstation as the machine
+environment variables `FOUNDRY_ENDPOINT` and `FOUNDRY_DEPLOYMENT`.
+
+### 2. Connect and sign in
+
+1. Open the Bastion RDP tunnel (the `bastionRdpTunnelCommand` output) and RDP to
+   `localhost:13389` with your admin username and password.
+2. Launch **Visual Studio Code**. On first logon the PostgreSQL extension, GitHub Copilot,
+   and Copilot Chat finish installing.
+3. Sign in to **GitHub Copilot** and to the **PostgreSQL extension** (Microsoft Entra ID).
+   This is the one sign-in the template can't do for you.
+
+### 3. Create the migration project
+
+In the PostgreSQL extension, open the **Migrations (preview)** view → **Create Migration Project**:
+
+1. **Project Setup** — name the project, then **Next**.
+2. **Connect to Oracle** — host `oraclePrivateIp`, port `1521`, service `FREEPDB1`, user
+   `MIG` with your deploy password. Select **Load Schemas**, choose **HR**, then **Next**.
+3. **Scratch database** — select the PostgreSQL flexible server (`postgresFqdn`, admin
+   `azureuser`) and a target database, select **Verify Extensions**, then **Next**.
+4. **Microsoft Foundry** — enter `foundryEndpoint` and the deployment name `gpt-5-mini`,
+   and choose **Microsoft Entra ID** for authentication.
+5. Select **Test Connection**, then **Create Migration Project**.
+
+### 4. Run the conversion
+
+On the **Schema Migration** card select **Migrate**, watch the *Extracting → Converting*
+stages, and wait for **Migration Complete**. Select **View Migration Report**.
+
+### 5. Review, triage, and resolve
+
+1. Read `reports/customer_summary.md` for the readiness decision, success percentage, and
+   the count of **Mandatory** tasks.
+2. In the **Schema Review** pane, set **Status = Pending** and **Priority = Mandatory**, and
+   open each flagged task.
+3. Select **Run Task** to open **GitHub Copilot agent mode** with the source and generated
+   DDL loaded. Review the proposed fix, apply it to the `.sql` file under
+   `postgres_ddl/<schema>/<object_type>/`, run it against the scratch database to confirm it
+   compiles, then select **Resolve**.
+4. Independently validate every AI-assisted fix — the success percentage reflects automated
+   coverage, not deployment readiness.
+
+### 6. Produce and deploy `deploy.sql`
+
+The consolidated `deploy.sql` under
+`artifacts/oracle/_migration/convert/sessions/<session-id>/` creates the target schema in
+dependency order. After you fix the root cause of a task, **rerun the conversion** so
+`deploy.sql` is regenerated (a change made directly against the scratch database is *not*
+propagated), then apply `deploy.sql` to the PostgreSQL server.
+
+> **If "Verify Extensions" fails:** Azure Database for PostgreSQL requires extensions to be
+> allow-listed before use. Add the ones your schema needs to the `azure.extensions` server
+> parameter (the server's **Server parameters** blade) and retry.
+>
+> **If "Load Schemas" fails with a permission error on `SYS.ARGUMENT$`:** the migration user
+> needs dictionary read access. Connect as a privileged user and run
+> `GRANT SELECT ANY DICTIONARY TO MIG;` (new deployments already include this grant).
+
 ## Tear down
 
 When you're done, remove everything by deleting the resource group. Azure has no native
@@ -96,16 +182,6 @@ password you set, then use VS Code. Reset the password later via `az vm run-comm
 
 See [deploy/azure/DEPLOYMENT.md](deploy/azure/DEPLOYMENT.md) for prerequisites, connection
 steps, the in-editor workflow, security notes, and tear-down.
-
-## The workflow
-
-| Step | In VS Code | Backed by |
-|---|---|---|
-| 1 Connect to Oracle | Add the Oracle connection in the PostgreSQL extension | The in-lab Oracle source VM (service `FREEPDB1`, port 1521) over the VNet |
-| 2 Connect target | Add the PostgreSQL flexible server | The in-lab Azure Database for PostgreSQL server |
-| 3 Convert | Run the Migration Wizard | The in-lab Azure OpenAI (Microsoft Foundry) deployment |
-| 4 Review | Inspect and refine the generated schema | GitHub Copilot Chat |
-| 5 Validate | Apply to the PostgreSQL server and verify | PostgreSQL extension |
 
 ## Security
 

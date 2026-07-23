@@ -50,6 +50,9 @@ write_files:
       create user MIG identified by "__ORACLE_PWD__";
       grant create session to MIG;
       grant select any table, select_catalog_role to MIG;
+      -- The Migration Wizard reads procedure/function argument metadata from
+      -- SYS.ARGUMENT$, which SELECT_CATALOG_ROLE alone does not cover.
+      grant select any dictionary to MIG;
 
       create table HR.regions (
         region_id   number primary key,
