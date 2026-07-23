@@ -6,7 +6,7 @@
     "config": {
       "isWizard": false,
       "basics": {
-        "description": "Deploy a network-isolated **Windows workstation** for the Oracle to Azure Database for PostgreSQL schema conversion feature. The VM runs Visual Studio Code with the Microsoft PostgreSQL extension inside your virtual network, reached privately over Azure Bastion (RDP). [Learn more](https://github.com/Balunywa/azure-oracle-pg-migrator)."
+        "description": "Deploy a complete, network-isolated **Oracle to Azure Database for PostgreSQL schema-conversion lab**: a Windows workstation (Visual Studio Code + the Microsoft PostgreSQL extension), an Oracle source database, an Azure Database for PostgreSQL flexible server, and an Azure OpenAI (Microsoft Foundry) deployment for AI-assisted conversion. All resources sit inside a single virtual network and are reached privately over Azure Bastion. [Learn more](https://github.com/Balunywa/azure-oracle-pg-migrator)."
       }
     },
     "basics": [
@@ -14,7 +14,7 @@
         "name": "adminUsername",
         "type": "Microsoft.Compute.UserNameTextBox",
         "label": "Administrator username",
-        "toolTip": "The local administrator account, also used as the RDP login.",
+        "toolTip": "The local administrator account for the workstation VM (also used as the RDP login and as the Oracle and PostgreSQL admin login).",
         "osPlatform": "Windows",
         "constraints": {
           "required": true
@@ -27,7 +27,7 @@
           "password": "Password",
           "confirmPassword": "Confirm password"
         },
-        "toolTip": "RDP login password. 12-123 characters, and must include at least one lowercase letter, one uppercase letter, and one digit.",
+        "toolTip": "Login password. Reused for the workstation RDP login and the Oracle and PostgreSQL admin accounts. 12-123 characters, and must include at least one lowercase letter, one uppercase letter, and one digit.",
         "constraints": {
           "required": true,
           "regex": "^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[^\\s]{12,123}$",
@@ -46,16 +46,76 @@
           {
             "name": "vmSize",
             "type": "Microsoft.Common.DropDown",
-            "label": "Virtual machine size",
-            "defaultValue": "Standard_D4s_v5 (4 vCPU, 16 GB)",
-            "toolTip": "Size of the workstation VM. D4s_v5 is enough for Visual Studio Code on Windows. Pick a family you have vCPU quota for in this region; if the Dsv5 sizes fail preflight with a quota error, choose a Dsv3 or Dasv5 size instead.",
+            "label": "Workstation VM size",
+            "defaultValue": "Standard_D4s_v3 (4 vCPU, 16 GB)",
+            "toolTip": "Size of the Windows workstation VM. D4s_v3 is enough for Visual Studio Code and is broadly available. Pick a family you have vCPU quota for in this region; if the Dsv5 sizes fail preflight with a quota error, choose a Dsv3 or Dasv5 size instead.",
             "constraints": {
               "allowedValues": [
+                { "label": "Standard_D4s_v3 (4 vCPU, 16 GB)", "value": "Standard_D4s_v3" },
                 { "label": "Standard_D2s_v5 (2 vCPU, 8 GB)", "value": "Standard_D2s_v5" },
                 { "label": "Standard_D4s_v5 (4 vCPU, 16 GB)", "value": "Standard_D4s_v5" },
                 { "label": "Standard_D8s_v5 (8 vCPU, 32 GB)", "value": "Standard_D8s_v5" },
-                { "label": "Standard_D4as_v5 (4 vCPU, 16 GB, AMD)", "value": "Standard_D4as_v5" },
-                { "label": "Standard_D4s_v3 (4 vCPU, 16 GB)", "value": "Standard_D4s_v3" }
+                { "label": "Standard_D4as_v5 (4 vCPU, 16 GB, AMD)", "value": "Standard_D4as_v5" }
+              ],
+              "required": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "source",
+        "label": "Oracle source",
+        "elements": [
+          {
+            "name": "oracleInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "A Linux VM runs Oracle Database Free (23ai) in a container and is seeded with a sample HR schema on first boot. It is reachable privately on TCP 1521 inside the virtual network. Service name: FREEPDB1."
+            }
+          },
+          {
+            "name": "oracleVmSize",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Oracle VM size",
+            "defaultValue": "Standard_D2s_v3 (2 vCPU, 8 GB)",
+            "toolTip": "Size of the Linux VM that hosts the Oracle source database container.",
+            "constraints": {
+              "allowedValues": [
+                { "label": "Standard_D2s_v3 (2 vCPU, 8 GB)", "value": "Standard_D2s_v3" },
+                { "label": "Standard_D4s_v3 (4 vCPU, 16 GB)", "value": "Standard_D4s_v3" },
+                { "label": "Standard_D2s_v5 (2 vCPU, 8 GB)", "value": "Standard_D2s_v5" }
+              ],
+              "required": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "target",
+        "label": "PostgreSQL target",
+        "elements": [
+          {
+            "name": "pgInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "An Azure Database for PostgreSQL flexible server is deployed with private access into a delegated subnet, reachable only from within the virtual network."
+            }
+          },
+          {
+            "name": "postgresSkuTier",
+            "type": "Microsoft.Common.DropDown",
+            "label": "PostgreSQL compute tier",
+            "defaultValue": "Burstable (Standard_B2s)",
+            "toolTip": "Compute tier for the flexible server. Burstable is the most economical choice for a lab.",
+            "constraints": {
+              "allowedValues": [
+                { "label": "Burstable (Standard_B2s)", "value": "Burstable" },
+                { "label": "General Purpose", "value": "GeneralPurpose" },
+                { "label": "Memory Optimized", "value": "MemoryOptimized" }
               ],
               "required": true
             }
@@ -64,27 +124,27 @@
       },
       {
         "name": "conversion",
-        "label": "Conversion",
+        "label": "AI conversion",
         "elements": [
           {
-            "name": "foundryEndpoint",
-            "type": "Microsoft.Common.TextBox",
-            "label": "Microsoft Foundry endpoint",
-            "toolTip": "Optional. https://<resource>.openai.azure.com. The PostgreSQL extension also prompts for this.",
-            "constraints": {
-              "required": false,
-              "regex": "^$|^https://.+$",
-              "validationMessage": "Enter a URL starting with https:// or leave blank."
+            "name": "aiInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "An Azure OpenAI (Microsoft Foundry) account and model deployment are created for AI-assisted schema conversion. The workstation's managed identity is granted the Cognitive Services OpenAI User role, and the endpoint and deployment name are wired into the workstation automatically."
             }
           },
           {
-            "name": "foundryDeployment",
+            "name": "openAiDeploymentName",
             "type": "Microsoft.Common.TextBox",
-            "label": "Foundry deployment name",
-            "defaultValue": "gpt-5.2",
-            "toolTip": "The model deployment name used for the conversion.",
+            "label": "Model deployment name",
+            "defaultValue": "gpt-5-mini",
+            "toolTip": "Name of the Azure OpenAI model deployment used for the conversion. The default deploys the gpt-5-mini model.",
             "constraints": {
-              "required": false
+              "required": true,
+              "regex": "^[a-zA-Z0-9._-]{2,64}$",
+              "validationMessage": "Use 2-64 characters: letters, numbers, dot, dash or underscore."
             }
           }
         ]
@@ -95,8 +155,9 @@
       "adminUsername": "[basics('adminUsername')]",
       "adminPassword": "[basics('adminPassword')]",
       "vmSize": "[steps('workstation').vmSize]",
-      "foundryEndpoint": "[steps('conversion').foundryEndpoint]",
-      "foundryDeployment": "[steps('conversion').foundryDeployment]"
+      "oracleVmSize": "[steps('source').oracleVmSize]",
+      "postgresSkuTier": "[steps('target').postgresSkuTier]",
+      "openAiDeploymentName": "[steps('conversion').openAiDeploymentName]"
     }
   }
 }

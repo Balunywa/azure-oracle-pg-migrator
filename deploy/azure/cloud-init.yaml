@@ -1,58 +1,26 @@
 #cloud-config
-# NOTE: OPTIONAL reference only — NOT used by the default deployment.
-# main.bicep / azuredeploy.json provision a WINDOWS VM and run setup.ps1; they do
-# not reference this file. To use it, pass it as custom-data to your own Ubuntu VM
-# and substitute __ADMIN_USERNAME__, __FOUNDRY_ENDPOINT__, and __FOUNDRY_DEPLOYMENT__
-# (for example with sed) before deployment.
+# Provisions the Oracle SOURCE for the schema-conversion lab: an Ubuntu VM that
+# runs Oracle Database Free 23ai in a container, seeded with a sample HR schema.
+# Reached privately on port 1521 from inside the virtual network (no public
+# ports). Consumed by main.bicep as the Oracle VM's custom-data; the tokens
+# __ADMIN_USERNAME__ and __ORACLE_PWD__ are substituted at deploy time.
 #
-# Provisions an Ubuntu 24.04 VM as a VNet-integrated workstation for the
-# OFFICIAL Oracle -> Azure Database for PostgreSQL schema conversion feature.
-#
-# It installs desktop Visual Studio Code + the Microsoft PostgreSQL extension
-# (ms-ossdata.vscode-pgsql), which runs the Migration Wizard and performs the
-# AI conversion via Microsoft Foundry, validated against your scratch database.
-# No conversion logic runs on this VM — it only hosts VS Code inside the
-# virtual network that can reach a privately networked Oracle source.
-#
-# Installed:
-#   - Visual Studio Code (desktop) + PostgreSQL extension + GitHub Copilot
-#   - A lightweight XFCE desktop + xrdp, reached privately over Azure Bastion
-#   - Oracle Instant Client 21 (thick client mode, for native net encryption)
-#   - Azure CLI (az sign-in for Microsoft Entra ID / Foundry)
-#
-# Access: connect over Azure Bastion via an RDP tunnel (port 3389). The login
-# password is set at deploy time; no SSH and no public ports are opened.
+# The database exposes service FREEPDB1 with two accounts (both use the deploy
+# password): HR (owns the sample schema) and MIG (read-only migration user with
+# SELECT_CATALOG_ROLE), matching the Oracle-to-PostgreSQL conversion lab.
 
 package_update: true
-package_upgrade: true
-
-packages:
-  - curl
-  - wget
-  - gnupg
-  - unzip
-  - ca-certificates
-  - apt-transport-https
-  - software-properties-common
-  - libaio1t64
-  - xfce4
-  - xfce4-goodies
-  - xrdp
-  - dbus-x11
 
 write_files:
-  - path: /etc/oracle-workstation/env
-    permissions: '0644'
+  - path: /etc/oracle/oracle.env
+    permissions: '0600'
     content: |
-      # Convenience values for the Migration Wizard. The PostgreSQL extension
-      # also prompts for these interactively. Filled at deploy time by main.bicep.
-      FOUNDRY_ENDPOINT=__FOUNDRY_ENDPOINT__
-      FOUNDRY_DEPLOYMENT=__FOUNDRY_DEPLOYMENT__
+      ORACLE_PASSWORD=__ORACLE_PWD__
 
   - path: /var/log/oracle-workstation-setup.log
     permissions: '0644'
     content: |
-      [boot] VM started. Provisioning the schema conversion workstation...
+      [boot] VM started. Provisioning the Oracle source database...
 
   - path: /usr/local/bin/prog
     permissions: '0755'
@@ -61,50 +29,113 @@ write_files:
       # Append a timestamped progress line to the setup log.
       echo "[$(date '+%H:%M:%S')] $*" | tee -a /var/log/oracle-workstation-setup.log
 
-  - path: /usr/local/bin/workstation-status
+  - path: /usr/local/bin/oracle-status
     permissions: '0755'
     content: |
       #!/usr/bin/env bash
-      # Follow setup progress (run from a terminal in the RDP desktop).
-      echo "Tailing setup log (Ctrl-C to stop)..."
+      # Follow setup progress and show the database state.
       tail -n +1 -f /var/log/oracle-workstation-setup.log &
       TAIL=$!
       until grep -q PROVISION_COMPLETE /var/log/oracle-workstation-setup.log 2>/dev/null; do sleep 2; done
       kill "$TAIL" 2>/dev/null || true
-      echo "=== Setup complete. Open VS Code and start the Migration Wizard. ==="
+      echo "=== Oracle ready on 1521/FREEPDB1 (schema HR, migration user MIG). ==="
+
+  # Sample schema, executed once when the database is first created.
+  - path: /opt/oracle-init/01_hr_schema.sql
+    permissions: '0644'
+    content: |
+      whenever sqlerror continue
+      create user HR identified by "__ORACLE_PWD__" quota unlimited on users;
+      grant connect, resource to HR;
+      create user MIG identified by "__ORACLE_PWD__";
+      grant create session to MIG;
+      grant select any table, select_catalog_role to MIG;
+
+      create table HR.regions (
+        region_id   number primary key,
+        region_name varchar2(50));
+      create table HR.countries (
+        country_id   char(2) primary key,
+        country_name varchar2(60),
+        region_id    number references HR.regions(region_id));
+      create table HR.locations (
+        location_id number primary key,
+        city        varchar2(50),
+        country_id  char(2) references HR.countries(country_id));
+      create table HR.departments (
+        department_id   number primary key,
+        department_name varchar2(50) not null,
+        location_id     number references HR.locations(location_id));
+      create sequence HR.employees_seq start with 1000;
+      create table HR.employees (
+        employee_id    number primary key,
+        first_name     varchar2(30),
+        last_name      varchar2(30) not null,
+        email          varchar2(60),
+        hire_date      date default sysdate not null,
+        salary         number(10,2),
+        commission_pct number(4,2),
+        department_id  number references HR.departments(department_id),
+        manager_id     number references HR.employees(employee_id));
+
+      create or replace trigger HR.employees_bi
+        before insert on HR.employees for each row
+      begin
+        if :new.employee_id is null then
+          :new.employee_id := HR.employees_seq.nextval;
+        end if;
+      end;
+      /
+
+      create or replace view HR.dept_headcount as
+        select d.department_id, d.department_name, count(e.employee_id) headcount
+        from HR.departments d
+        left join HR.employees e on e.department_id = d.department_id
+        group by d.department_id, d.department_name;
+
+      create or replace function HR.get_annual_salary(p_emp in number) return number is
+        v_total number;
+      begin
+        select nvl(salary, 0) * 12 + nvl(salary * commission_pct, 0) * 12
+          into v_total from HR.employees where employee_id = p_emp;
+        return v_total;
+      end;
+      /
+
+      create or replace package HR.emp_pkg as
+        function fmt_name(p_emp in number) return varchar2;
+        procedure give_raise(p_emp in number, p_pct in number);
+      end;
+      /
+      create or replace package body HR.emp_pkg as
+        function fmt_name(p_emp in number) return varchar2 is
+          v_name varchar2(100);
+        begin
+          select last_name || ', ' || first_name into v_name
+            from HR.employees where employee_id = p_emp;
+          return v_name;
+        end;
+        procedure give_raise(p_emp in number, p_pct in number) is
+        begin
+          update HR.employees set salary = salary * (1 + p_pct / 100)
+            where employee_id = p_emp;
+        end;
+      end;
+      /
+
+      insert into HR.regions values (1, 'Europe');
+      insert into HR.countries values ('UK', 'United Kingdom', 1);
+      insert into HR.locations values (100, 'London', 'UK');
+      insert into HR.departments values (10, 'Engineering', 100);
+      insert into HR.employees (first_name, last_name, email, salary, commission_pct, department_id)
+        values ('Ada', 'Lovelace', 'ada@example.com', 9000, 0.10, 10);
+      commit;
 
 runcmd:
-  # --- XFCE desktop + RDP (private, via Bastion) -----------------------------
-  - prog "[1/4] Enabling XFCE desktop + RDP for private Bastion access..."
-  - echo "xfce4-session" > /home/__ADMIN_USERNAME__/.xsession
-  - chown __ADMIN_USERNAME__:__ADMIN_USERNAME__ /home/__ADMIN_USERNAME__/.xsession
-  - adduser xrdp ssl-cert || true
-  - systemctl enable --now xrdp
-
-  # --- Visual Studio Code (desktop) ------------------------------------------
-  - prog "[2/4] Installing Visual Studio Code..."
-  - curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg
-  - echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
-  - apt-get update && apt-get install -y code
-
-  # --- PostgreSQL extension + GitHub Copilot ---------------------------------
-  - prog "[3/4] Installing the PostgreSQL extension and GitHub Copilot..."
-  - sudo -u __ADMIN_USERNAME__ -H code --install-extension ms-ossdata.vscode-pgsql || true
-  - sudo -u __ADMIN_USERNAME__ -H code --install-extension github.copilot || true
-  - sudo -u __ADMIN_USERNAME__ -H code --install-extension github.copilot-chat || true
-
-  # --- Oracle Instant Client 21 (thick client mode) --------------------------
-  - prog "[4/4] Installing Oracle Instant Client 21 (thick client mode)..."
-  - mkdir -p /opt/oracle && cd /opt/oracle
-  - curl -fsSLo basic.zip https://download.oracle.com/otn_software/linux/instantclient/2113000/instantclient-basic-linux.x64-21.13.0.0.0dbru.zip
-  - unzip -oq basic.zip
-  - echo /opt/oracle/instantclient_21_13 > /etc/ld.so.conf.d/oracle.conf && ldconfig
-  - ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1 || true
-
-  # --- Azure CLI (Microsoft Entra ID sign-in for Foundry / target DB) --------
-  - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
-
-  - prog "PROVISION_COMPLETE — VS Code + PostgreSQL extension ready."
-  - echo "=== Setup complete ==="
-  - echo "Connect: az network bastion tunnel ... --resource-port 3389 --port 13389, then RDP to localhost:13389"
-  - echo "Then open VS Code, select the PostgreSQL extension, and start the Migration Wizard."
+  - prog "[1/3] Installing Docker..."
+  - curl -fsSL https://get.docker.com | sh
+  - prog "[2/3] Starting Oracle Database Free 23ai (this pulls a large image)..."
+  - docker run -d --name oracle --restart unless-stopped -p 1521:1521 --env-file /etc/oracle/oracle.env -v /opt/oracle-init:/container-entrypoint-initdb.d gvenzl/oracle-free:23-slim
+  - prog "[3/3] Waiting for the database to open and the sample schema to load..."
+  - bash -c 'for i in $(seq 1 80); do if docker logs oracle 2>&1 | grep -q "DATABASE IS READY TO USE"; then break; fi; sleep 15; done'
+  - prog "PROVISION_COMPLETE - Oracle Free 23ai on 1521/FREEPDB1 (schema HR, migration user MIG)."

@@ -18,38 +18,78 @@
 //        foundryEndpoint=https://<your>.openai.azure.com \
 //        foundryDeployment=gpt-5.2
 
-@description('Admin username for the VM (also the RDP login).')
+@description('Admin username for the workstation VM (RDP login) and the Oracle and PostgreSQL admin accounts.')
 param adminUsername string
 
-@description('Password for the VM admin account, used for the Bastion RDP login. Reset later with `az vm run-command` if needed.')
+@description('Password for the RDP login and for the Oracle and PostgreSQL admin accounts. Must satisfy Windows, Oracle, and PostgreSQL complexity rules.')
 @secure()
 param adminPassword string
 
 @description('Azure region. Defaults to the resource group region.')
 param location string = resourceGroup().location
 
-@description('VM size. D4s_v5 = 4 vCPU / 16 GB, enough for VS Code on Windows.')
-param vmSize string = 'Standard_D4s_v5'
+@description('Workstation VM size. D4s_v3 = 4 vCPU / 16 GB and is broadly available. If you prefer a newer family and have quota, use a Dsv5/Dasv5 size (for example Standard_D4s_v5).')
+param vmSize string = 'Standard_D4s_v3'
 
-@description('DNS label prefix for the public IP. Must be globally unique in the region.')
+@description('Oracle source VM size (Linux; runs Oracle Database Free 23ai in a container).')
+param oracleVmSize string = 'Standard_D2s_v3'
+
+@description('PostgreSQL flexible server compute tier. The compute SKU size is derived from this tier.')
+@allowed([ 'Burstable', 'GeneralPurpose', 'MemoryOptimized' ])
+param postgresSkuTier string = 'Burstable'
+
+@description('PostgreSQL major version.')
+param postgresVersion string = '16'
+
+@description('Name of the Azure OpenAI (Microsoft Foundry) model deployment used for the conversion.')
+param openAiDeploymentName string = 'gpt-5-mini'
+
+@description('Azure OpenAI model name.')
+param openAiModelName string = 'gpt-5-mini'
+
+@description('Azure OpenAI model version.')
+param openAiModelVersion string = '2025-08-07'
+
+@description('Azure OpenAI deployment SKU. GlobalStandard is broadly available for gpt-5-mini.')
+param openAiSkuName string = 'GlobalStandard'
+
+@description('Azure OpenAI deployment capacity, in thousands of tokens per minute (TPM).')
+param openAiCapacity int = 10
+
+@description('DNS label prefix for the workstation public IP. Must be globally unique in the region.')
 param dnsLabelPrefix string = 'oracle-bridge-${uniqueString(resourceGroup().id)}'
 
-@description('Azure AI Foundry endpoint (https://<resource>.openai.azure.com). Optional convenience value; the PostgreSQL extension also prompts for it.')
-param foundryEndpoint string = ''
-
-@description('Foundry deployment name (e.g. gpt-5.2).')
-param foundryDeployment string = 'gpt-5.2'
-
+var suffix       = uniqueString(resourceGroup().id)
 var vnetName     = 'oracle-bridge-vnet'
 var subnetName   = 'default'
+var oracleSubnet = 'oracle'
+var pgSubnet     = 'postgres'
 var nsgName      = 'oracle-bridge-nsg'
 var pipName      = 'oracle-bridge-pip'
 var nicName      = 'oracle-bridge-nic'
 var vmName       = 'oracle-bridge-vm'
 var bastionName  = 'oracle-bridge-bastion'
+var oracleVmName = 'oracle-source-vm'
+var oracleNicName = 'oracle-source-nic'
+var pgName       = 'orabridge-pg-${suffix}'
+var openaiName   = 'orabridge-oai-${suffix}'
+var pgDnsZoneName = '${pgName}.private.postgres.database.azure.com'
+
+// PostgreSQL compute SKU size, derived from the selected tier so the two always match.
+var pgSkuNameMap = {
+  Burstable: 'Standard_B2s'
+  GeneralPurpose: 'Standard_D2ds_v5'
+  MemoryOptimized: 'Standard_E2ds_v5'
+}
+var pgSkuName = pgSkuNameMap[postgresSkuTier]
 
 // Windows computer names must be <= 15 characters.
 var computerName = 'ora-bridge-vm'
+
+// Cloud-init for the Oracle source VM, with deploy-time values substituted in.
+var oracleCloudInit = replace(replace(loadTextContent('cloud-init.yaml'),
+  '__ADMIN_USERNAME__', adminUsername),
+  '__ORACLE_PWD__',     adminPassword)
 
 resource nsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
   name: nsgName
@@ -64,6 +104,14 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
           priority: 1000, protocol: 'Tcp', access: 'Allow', direction: 'Inbound'
           sourceAddressPrefix: 'VirtualNetwork', sourcePortRange: '*'
           destinationAddressPrefix: '*', destinationPortRange: '3389'
+        }
+      }
+      {
+        name: 'AllowOracleFromVnet'
+        properties: {
+          priority: 1010, protocol: 'Tcp', access: 'Allow', direction: 'Inbound'
+          sourceAddressPrefix: 'VirtualNetwork', sourcePortRange: '*'
+          destinationAddressPrefix: '*', destinationPortRange: '1521'
         }
       }
     ]
@@ -87,6 +135,23 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
         name: 'AzureBastionSubnet'
         properties: {
           addressPrefix: '10.42.2.0/26'
+        }
+      }
+      {
+        name: oracleSubnet
+        properties: {
+          addressPrefix: '10.42.3.0/24'
+          networkSecurityGroup: { id: nsg.id }
+        }
+      }
+      {
+        name: pgSubnet
+        properties: {
+          addressPrefix: '10.42.4.0/24'
+          delegations: [ {
+            name: 'pgFlex'
+            properties: { serviceName: 'Microsoft.DBforPostgreSQL/flexibleServers' }
+          } ]
         }
       }
     ]
@@ -118,10 +183,12 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-11-01' = {
   }
 }
 
-// PowerShell setup script, with deploy-time values substituted in.
+// PowerShell setup script, with the auto-provisioned Foundry (Azure OpenAI)
+// endpoint and deployment name substituted in. Referencing openai.properties
+// here makes the workstation install wait until Foundry exists.
 var setupScript = replace(replace(loadTextContent('setup.ps1'),
-  '__FOUNDRY_ENDPOINT__',   foundryEndpoint),
-  '__FOUNDRY_DEPLOYMENT__', foundryDeployment)
+  '__FOUNDRY_ENDPOINT__',   openai.properties.endpoint),
+  '__FOUNDRY_DEPLOYMENT__', openAiDeploymentName)
 
 resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
   name: vmName
@@ -195,6 +262,135 @@ resource bastion 'Microsoft.Network/bastionHosts@2023-11-01' = {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Oracle source: Ubuntu VM running Oracle Database Free 23ai in a container,
+// seeded with a sample HR schema. Reachable privately on 1521 from the VNet.
+// ---------------------------------------------------------------------------
+resource oracleNic 'Microsoft.Network/networkInterfaces@2023-11-01' = {
+  name: oracleNicName
+  location: location
+  properties: {
+    ipConfigurations: [ {
+      name: 'ipconfig1'
+      properties: {
+        subnet: { id: '${vnet.id}/subnets/${oracleSubnet}' }
+        privateIPAllocationMethod: 'Dynamic'
+      }
+    } ]
+  }
+}
+
+resource oracleVm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
+  name: oracleVmName
+  location: location
+  properties: {
+    hardwareProfile: { vmSize: oracleVmSize }
+    osProfile: {
+      computerName: 'oracle-source'
+      adminUsername: adminUsername
+      adminPassword: adminPassword
+      customData: base64(oracleCloudInit)
+      linuxConfiguration: { disablePasswordAuthentication: false }
+    }
+    storageProfile: {
+      imageReference: {
+        publisher: 'Canonical'
+        offer:     'ubuntu-24_04-lts'
+        sku:       'server'
+        version:   'latest'
+      }
+      osDisk: {
+        createOption: 'FromImage'
+        diskSizeGB: 64
+        managedDisk: { storageAccountType: 'Premium_LRS' }
+      }
+    }
+    networkProfile: { networkInterfaces: [ { id: oracleNic.id } ] }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scratch/target: Azure Database for PostgreSQL flexible server (private access
+// integrated into the VNet, reachable on 5432 from the workstation).
+// ---------------------------------------------------------------------------
+resource pgDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: pgDnsZoneName
+  location: 'global'
+}
+
+resource pgDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: pgDns
+  name: 'vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: { id: vnet.id }
+  }
+}
+
+resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = {
+  name: pgName
+  location: location
+  sku: { name: pgSkuName, tier: postgresSkuTier }
+  properties: {
+    version: postgresVersion
+    administratorLogin: adminUsername
+    administratorLoginPassword: adminPassword
+    storage: { storageSizeGB: 32 }
+    network: {
+      delegatedSubnetResourceId: '${vnet.id}/subnets/${pgSubnet}'
+      privateDnsZoneArmResourceId: pgDns.id
+    }
+    highAvailability: { mode: 'Disabled' }
+    backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
+  }
+  dependsOn: [ pgDnsLink ]
+}
+
+// ---------------------------------------------------------------------------
+// Microsoft Foundry: Azure OpenAI account + model deployment that powers the
+// AI conversion. The workstation's managed identity is granted key-less access.
+// ---------------------------------------------------------------------------
+resource openai 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
+  name: openaiName
+  location: location
+  kind: 'OpenAI'
+  sku: { name: 'S0' }
+  properties: {
+    customSubDomainName: openaiName
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource openaiDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
+  parent: openai
+  name: openAiDeploymentName
+  sku: { name: openAiSkuName, capacity: openAiCapacity }
+  properties: {
+    model: { format: 'OpenAI', name: openAiModelName, version: openAiModelVersion }
+    versionUpgradeOption: 'NoAutoUpgrade'
+  }
+}
+
+// Cognitive Services OpenAI User role, so the workstation can call Foundry
+// with its managed identity instead of an API key.
+var openAiUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+resource openaiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(openai.id, vm.id, openAiUserRoleId)
+  scope: openai
+  properties: {
+    roleDefinitionId: openAiUserRoleId
+    principalId: vm.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 output publicFqdn   string = pip.properties.dnsSettings.fqdn
 output vmResourceId string = vm.id
 output bastionRdpTunnelCommand string = 'az network bastion tunnel -n ${bastionName} -g ${resourceGroup().name} --target-resource-id ${vm.id} --resource-port 3389 --port 13389  # then RDP to localhost:13389'
+output oraclePrivateIp string = oracleNic.properties.ipConfigurations[0].properties.privateIPAddress
+output oracleServiceName string = 'FREEPDB1'
+output postgresFqdn string = postgres.properties.fullyQualifiedDomainName
+output postgresAdmin string = adminUsername
+output foundryEndpoint string = openai.properties.endpoint
+output foundryDeployment string = openAiDeploymentName
