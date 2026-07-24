@@ -18,15 +18,42 @@ up the whole environment for you.
 ## Deploy to Azure
 
 Click the button, sign in to the Azure portal, fill in the form (admin username and
-password, VM sizes, PostgreSQL tier, and model deployment name), and select
-**Review + create**. Everything — workstation, Oracle source, PostgreSQL target, and the
-Azure OpenAI deployment — is created for you. No CLI required.
+password, VM sizes, PostgreSQL tier, an optional Microsoft Entra admin for the PostgreSQL
+server, and model deployment name), and select **Review + create**. Everything — workstation,
+Oracle source, PostgreSQL target, and the Azure OpenAI deployment — is created for you. No
+CLI required.
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#blade/Microsoft_Azure_CreateUIDef/CustomDeploymentBlade/uri/https%3A%2F%2Fraw.githubusercontent.com%2FBalunywa%2Fazure-oracle-pg-migrator%2Fmain%2Fdeploy%2Fazure%2Fazuredeploy.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FBalunywa%2Fazure-oracle-pg-migrator%2Fmain%2Fdeploy%2Fazure%2FcreateUiDefinition.json)
 [![Visualize](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/visualizebutton.svg)](http://armviz.io/#/?load=https%3A%2F%2Fraw.githubusercontent.com%2FBalunywa%2Fazure-oracle-pg-migrator%2Fmain%2Fdeploy%2Fazure%2Fazuredeploy.json)
 
 After the deployment finishes, see [Connect to the workstation](deploy/azure/DEPLOYMENT.md#connect)
 to open the Azure Bastion RDP tunnel and start the Migration Wizard.
+
+## What's installed on the workstation
+
+The workstation is a Windows Server 2022 VM provisioned at deploy time by
+[deploy/azure/setup.ps1](deploy/azure/setup.ps1).
+
+**VS Code extensions** (installed at first interactive logon):
+
+| Extension | ID | Purpose |
+|---|---|---|
+| PostgreSQL (Microsoft) | `ms-ossdata.vscode-pgsql` | Runs the Migration Wizard and performs the AI schema conversion |
+| GitHub Copilot | `github.copilot` | Copilot agent used to triage and fix conversion tasks |
+| GitHub Copilot Chat | `github.copilot-chat` | Chat / agent mode for resolving flagged items |
+
+**Command-line tooling** (installed system-wide during deployment):
+
+- **Visual Studio Code** (desktop, added to `PATH`)
+- **Oracle Instant Client 21.13** (thick-client mode, on `PATH`) — connects to the Oracle source
+- **Azure CLI** — Microsoft Entra ID sign-in for Foundry and the PostgreSQL target
+
+> **First-logon note:** the three extensions install via a Windows `RunOnce` entry the first
+> time you sign in, so they need outbound access to the VS Code Marketplace at that moment and
+> appear a few seconds after the desktop loads. The setup log's `PROVISION_COMPLETE` line is
+> written *before* that logon, so it confirms the deploy-time steps finished — not that the
+> extensions installed. If any are missing, run the `code --install-extension` commands from
+> [deploy/azure/setup.ps1](deploy/azure/setup.ps1) manually in a terminal.
 
 ## After deployment: run the schema conversion
 
@@ -52,6 +79,7 @@ az deployment group show -g oracle-bridge-rg -n <deployment-name> \
 | Oracle migration user | `MIG` + your deploy password | seeded, read-only |
 | PostgreSQL server | e.g. `orabridge-pg-xxxx.postgres.database.azure.com` | `postgresFqdn` |
 | PostgreSQL admin | `azureuser` + your deploy password | `postgresAdmin` |
+| PostgreSQL Entra admin | tokenless sign-in via Browse Azure (only if you set one) | `postgresEntraAdmin` |
 | Foundry endpoint | e.g. `https://orabridge-oai-xxxx.openai.azure.com/` | `foundryEndpoint` |
 | Foundry deployment | `gpt-5-mini` | `foundryDeployment` |
 
@@ -74,8 +102,11 @@ In the PostgreSQL extension, open the **Migrations (preview)** view → **Create
 1. **Project Setup** — name the project, then **Next**.
 2. **Connect to Oracle** — host `oraclePrivateIp`, port `1521`, service `FREEPDB1`, user
    `MIG` with your deploy password. Select **Load Schemas**, choose **HR**, then **Next**.
-3. **Scratch database** — select the PostgreSQL flexible server (`postgresFqdn`, admin
-   `azureuser`) and a target database, select **Verify Extensions**, then **Next**.
+3. **Scratch database** — connect to the PostgreSQL flexible server (`postgresFqdn`). If you
+   set a Microsoft Entra admin at deploy time (`entraAdminObjectId`), choose **Browse Azure**
+   and select the server with **Microsoft Entra ID** authentication — no password to enter or
+   store. Otherwise connect with admin `azureuser` and your deploy password. Pick a target
+   database, select **Verify Extensions**, then **Next**.
 4. **Microsoft Foundry** — enter `foundryEndpoint` and the deployment name `gpt-5-mini`,
    and choose **Microsoft Entra ID** for authentication.
 5. Select **Test Connection**, then **Create Migration Project**.

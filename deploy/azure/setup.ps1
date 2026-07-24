@@ -19,6 +19,13 @@ function Prog($m) { "$(Get-Date -Format HH:mm:ss) $m" | Tee-Object -FilePath $lo
 
 Prog 'Provisioning the schema conversion workstation...'
 
+# --- Ensure copy/paste (clipboard) works over the Bastion RDP session ------
+# Clipboard redirection is on by default; set it explicitly so text (e.g. URLs,
+# SQL) can be pasted into this VM from your local machine. fDisableClip = 0
+# keeps the RDP clipboard channel enabled.
+Prog 'Ensuring RDP clipboard redirection is enabled...'
+Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'fDisableClip' -Value 0 -Type DWord -Force
+
 # --- Visual Studio Code (desktop, system-wide) -----------------------------
 Prog '[1/4] Installing Visual Studio Code...'
 $vscode = "$env:TEMP\vscode-setup.exe"
@@ -56,6 +63,39 @@ Start-Process -Wait -FilePath 'msiexec.exe' -ArgumentList '/i',"$azMsi",'/qn','/
 # --- Foundry convenience values (the extension also prompts for these) -----
 [Environment]::SetEnvironmentVariable('FOUNDRY_ENDPOINT',   '__FOUNDRY_ENDPOINT__',   'Machine')
 [Environment]::SetEnvironmentVariable('FOUNDRY_DEPLOYMENT', '__FOUNDRY_DEPLOYMENT__', 'Machine')
+
+# --- Connection cheat-sheet on the desktop ---------------------------------
+# The databases have no public endpoint and resolve only from this workstation,
+# so the full names are written here to avoid mistyped/truncated hostnames.
+Prog 'Writing connection details to the Public desktop...'
+$connInfo = @"
+=== Oracle -> Azure Database for PostgreSQL lab: connection details ===
+Open Visual Studio Code and use these in the PostgreSQL extension.
+
+PostgreSQL target  (Scratch database step)
+  Server name : __PG_FQDN__
+  Port        : 5432
+  Database    : __PG_DATABASE__
+  Username    : __PG_ADMIN__
+  Password    : the password you set at deployment
+  SSL mode    : require
+
+Oracle source  (Connect to Oracle step)
+  Hostname    : __ORACLE_HOST__
+  Port        : 1521
+  Service name: FREEPDB1
+  Username    : MIG
+  Password    : the password you set at deployment
+
+Foundry  (AI conversion step)
+  Endpoint    : __FOUNDRY_ENDPOINT__
+  Deployment  : __FOUNDRY_DEPLOYMENT__  (this is the model deployment, not the resource name)
+  Auth        : API Key (Azure OpenAI resource -> Keys and Endpoint)
+
+Use the FULL PostgreSQL server name above (ends in .postgres.database.azure.com).
+It resolves only from THIS workstation - the databases have no public endpoint.
+"@
+$connInfo | Out-File -FilePath 'C:\Users\Public\Desktop\connection-info.txt' -Encoding utf8
 
 Prog 'PROVISION_COMPLETE - VS Code + PostgreSQL extension ready.'
 Prog 'Connect over a Bastion RDP tunnel, then open VS Code and start the Migration Wizard.'

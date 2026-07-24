@@ -33,12 +33,105 @@ write_files:
     permissions: '0755'
     content: |
       #!/usr/bin/env bash
-      # Follow setup progress and show the database state.
+      # Follow setup progress and show the final database state.
       tail -n +1 -f /var/log/oracle-workstation-setup.log &
       TAIL=$!
-      until grep -q PROVISION_COMPLETE /var/log/oracle-workstation-setup.log 2>/dev/null; do sleep 2; done
+      until grep -Eq 'PROVISION_(COMPLETE|FAILED)' /var/log/oracle-workstation-setup.log 2>/dev/null; do sleep 2; done
       kill "$TAIL" 2>/dev/null || true
-      echo "=== Oracle ready on 1521/FREEPDB1 (schema HR, migration user MIG). ==="
+      if grep -q PROVISION_COMPLETE /var/log/oracle-workstation-setup.log; then
+        echo "=== Oracle ready on 1521/FREEPDB1 (schema HR, migration user MIG). ==="
+      else
+        echo "=== Oracle provisioning FAILED - inspect 'docker logs oracle' and /var/log/oracle-workstation-setup.log. ==="
+      fi
+
+  # Verifies the HR sample schema actually loaded, and reseeds it if the
+  # first-run init script did not populate it.
+  - path: /usr/local/bin/verify-hr-seed
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # The gvenzl image only runs /container-entrypoint-initdb.d scripts on the
+      # FIRST database creation, so a transient failure there would otherwise
+      # leave HR empty with no second chance (and the wizard would list no user
+      # schema to convert). This checks the row count and reseeds once before
+      # declaring success, so a "succeeded" deploy can never ship an empty HR.
+      run_sql() { docker exec -i oracle sqlplus -s / as sysdba; }
+
+      hr_count() {
+        printf '%s\n' \
+          "whenever sqlerror exit failure" \
+          "set heading off feedback off pages 0 lines 200" \
+          "alter session set container=FREEPDB1;" \
+          "select 'HRROWS='||count(*) from HR.employees;" \
+          | run_sql 2>/dev/null \
+          | sed -n 's/.*HRROWS=\([0-9][0-9]*\).*/\1/p' | head -n1
+      }
+
+      reseed() {
+        printf '%s\n' \
+          "alter session set container=FREEPDB1;" \
+          "@/container-entrypoint-initdb.d/01_hr_schema.sql" \
+          | run_sql
+      }
+
+      count=$(hr_count); [ -z "$count" ] && count=0
+      if [ "$count" -lt 1 ]; then
+        prog "HR schema empty (rows=$count); re-running seed script..."
+        reseed >>/var/log/oracle-workstation-setup.log 2>&1
+        count=$(hr_count); [ -z "$count" ] && count=0
+      fi
+
+      if [ "$count" -ge 1 ]; then
+        prog "PROVISION_COMPLETE - Oracle Free 23ai on 1521/FREEPDB1 (schema HR verified: $count employee row(s), migration user MIG)."
+        exit 0
+      fi
+      prog "PROVISION_FAILED - HR schema did not load after reseed. Inspect 'docker logs oracle'."
+      exit 1
+
+  # Installs the PostgreSQL extensions the Migration Wizard recommends into the
+  # scratch database, so users never have to allow-list + create them by hand.
+  # The server-side allow-list is set by main.bicep (azure.extensions); this
+  # creates them in the DB. Best-effort per extension, with a reachability wait.
+  - path: /usr/local/bin/install-pg-extensions
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      export PGHOST='__PG_FQDN__'
+      export PGUSER='__PG_ADMIN__'
+      export PGDATABASE='postgres'
+      export PGPASSWORD='__ORACLE_PWD__'
+      export PGSSLMODE='require'
+
+      psql_c() { psql -w -tAc "$1" 2>&1; }
+
+      # pg_cron is intentionally omitted: it also needs shared_preload_libraries
+      # plus a server restart, which allow-listing alone does not cover.
+      EXTS=(orafce pgcrypto "uuid-ossp" tablefunc pg_trgm postgis postgis_topology pg_partman postgis_tiger_geocoder)
+
+      # Wait for the private PostgreSQL endpoint to resolve and accept logins.
+      ready=0
+      for i in $(seq 1 40); do
+        if [ "$(psql_c 'select 1')" = "1" ]; then ready=1; break; fi
+        prog "Waiting for PostgreSQL ($PGHOST) to become reachable... ($i)"
+        sleep 30
+      done
+      if [ "$ready" -ne 1 ]; then
+        prog "PG extensions: PostgreSQL not reachable; skipping (install manually if needed)."
+        exit 0
+      fi
+
+      ok=0; fail=0
+      for e in "${EXTS[@]}"; do
+        out=$(psql_c "create extension if not exists \"$e\" cascade;")
+        if printf '%s' "$out" | grep -qiE 'error|fatal'; then
+          prog "PG extension $e: skipped ($(printf '%s' "$out" | head -n1))"
+          fail=$((fail+1))
+        else
+          prog "PG extension $e: installed."
+          ok=$((ok+1))
+        fi
+      done
+      prog "PG extensions complete: $ok installed, $fail skipped (pg_cron needs shared_preload_libraries + restart if you want it)."
 
   # Sample schema, executed once when the database is first created.
   - path: /opt/oracle-init/01_hr_schema.sql
@@ -135,10 +228,13 @@ write_files:
       commit;
 
 runcmd:
-  - prog "[1/3] Installing Docker..."
+  - prog "[1/4] Installing Docker and the PostgreSQL client..."
   - curl -fsSL https://get.docker.com | sh
-  - prog "[2/3] Starting Oracle Database Free 23ai (this pulls a large image)..."
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-client
+  - prog "[2/4] Starting Oracle Database Free 23ai (this pulls a large image)..."
   - docker run -d --name oracle --restart unless-stopped -p 1521:1521 --env-file /etc/oracle/oracle.env -v /opt/oracle-init:/container-entrypoint-initdb.d gvenzl/oracle-free:23-slim
-  - prog "[3/3] Waiting for the database to open and the sample schema to load..."
+  - prog "[3/4] Waiting for the database to open and the sample schema to load..."
   - bash -c 'for i in $(seq 1 80); do if docker logs oracle 2>&1 | grep -q "DATABASE IS READY TO USE"; then break; fi; sleep 15; done'
-  - prog "PROVISION_COMPLETE - Oracle Free 23ai on 1521/FREEPDB1 (schema HR, migration user MIG)."
+  - /usr/local/bin/verify-hr-seed
+  - prog "[4/4] Installing recommended PostgreSQL extensions into the scratch database..."
+  - /usr/local/bin/install-pg-extensions

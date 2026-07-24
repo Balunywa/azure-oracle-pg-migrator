@@ -91,9 +91,14 @@ var pgSkuName = pgSkuNameMap[postgresSkuTier]
 var computerName = 'ora-bridge-vm'
 
 // Cloud-init for the Oracle source VM, with deploy-time values substituted in.
-var oracleCloudInit = replace(replace(loadTextContent('cloud-init.yaml'),
+// The Oracle VM also installs the recommended PostgreSQL extensions into the
+// scratch database (it shares the admin password and can reach PG privately),
+// so the __PG_* tokens carry the target connection details.
+var oracleCloudInit = replace(replace(replace(replace(loadTextContent('cloud-init.yaml'),
   '__ADMIN_USERNAME__', adminUsername),
-  '__ORACLE_PWD__',     adminPassword)
+  '__ORACLE_PWD__',     adminPassword),
+  '__PG_FQDN__',        postgres.properties.fullyQualifiedDomainName),
+  '__PG_ADMIN__',       adminUsername)
 
 resource nsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
   name: nsgName
@@ -188,11 +193,17 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-11-01' = {
 }
 
 // PowerShell setup script, with the auto-provisioned Foundry (Azure OpenAI)
-// endpoint and deployment name substituted in. Referencing openai.properties
-// here makes the workstation install wait until Foundry exists.
-var setupScript = replace(replace(loadTextContent('setup.ps1'),
+// endpoint and deployment name substituted in, plus the exact database
+// connection values so the workstation writes a desktop cheat-sheet (avoids
+// mistyped hostnames). Referencing these properties makes the workstation
+// install wait until Foundry, PostgreSQL, and the Oracle NIC exist.
+var setupScript = replace(replace(replace(replace(replace(replace(loadTextContent('setup.ps1'),
   '__FOUNDRY_ENDPOINT__',   openai.properties.endpoint),
-  '__FOUNDRY_DEPLOYMENT__', openAiDeploymentName)
+  '__FOUNDRY_DEPLOYMENT__', openAiDeploymentName),
+  '__PG_FQDN__',            postgres.properties.fullyQualifiedDomainName),
+  '__ORACLE_HOST__',        oracleNic.properties.ipConfigurations[0].properties.privateIPAddress),
+  '__PG_ADMIN__',           adminUsername),
+  '__PG_DATABASE__',        'postgres')
 
 resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
   name: vmName
@@ -241,6 +252,8 @@ resource setup 'Microsoft.Compute/virtualMachines/runCommands@2024-03-01' = {
 
 // Azure Bastion — private RDP access via a tunnel, no public port 22/3389.
 // Standard SKU with tunneling enabled so `az network bastion tunnel` works.
+// disableCopyPaste is set false so clipboard copy/paste works in the browser
+// session (native RDP over the tunnel gets full clipboard from the client).
 resource bastionPip 'Microsoft.Network/publicIPAddresses@2023-11-01' = {
   name: '${bastionName}-pip'
   location: location
@@ -256,6 +269,7 @@ resource bastion 'Microsoft.Network/bastionHosts@2023-11-01' = {
   sku: { name: 'Standard' }
   properties: {
     enableTunneling: true
+    disableCopyPaste: false
     ipConfigurations: [ {
       name: 'IpConf'
       properties: {
@@ -311,6 +325,9 @@ resource oracleVm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
     }
     networkProfile: { networkInterfaces: [ { id: oracleNic.id } ] }
   }
+  // Ensure the extension allow-list is in place before cloud-init runs
+  // CREATE EXTENSION against the scratch database.
+  dependsOn: [ pgExtensions ]
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +366,20 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview'
     backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
   }
   dependsOn: [ pgDnsLink ]
+}
+
+// Allow-list the extensions the Oracle-to-PostgreSQL Migration Wizard
+// recommends, so CREATE EXTENSION is permitted in the scratch database. This
+// is control-plane only; the Oracle VM's cloud-init then creates them in the DB
+// (pg_cron is allow-listed but additionally needs shared_preload_libraries +
+// a restart, so it is not auto-created).
+resource pgExtensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2023-06-01-preview' = {
+  parent: postgres
+  name: 'azure.extensions'
+  properties: {
+    value: 'ORAFCE,PG_PARTMAN,PGCRYPTO,POSTGIS,POSTGIS_TIGER_GEOCODER,POSTGIS_TOPOLOGY,PG_CRON,TABLEFUNC,UUID-OSSP,PG_TRGM,FUZZYSTRMATCH,ADDRESS_STANDARDIZER,ADDRESS_STANDARDIZER_DATA_US'
+    source: 'user-override'
+  }
 }
 
 // ---------------------------------------------------------------------------
