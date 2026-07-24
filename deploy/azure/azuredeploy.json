@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "12642462895229289883"
+      "templateHash": "4232382723054013572"
     }
   },
   "parameters": {
@@ -115,7 +115,7 @@
     "nsgName": "oracle-bridge-nsg",
     "pipName": "oracle-bridge-pip",
     "nicName": "oracle-bridge-nic",
-    "vmName": "oracle-bridge-vm",
+    "vmName": "migration-workstation",
     "bastionName": "oracle-bridge-bastion",
     "oracleVmName": "oracle-source-vm",
     "oracleNicName": "oracle-source-nic",
@@ -128,7 +128,7 @@
       "MemoryOptimized": "Standard_E2ds_v5"
     },
     "pgSkuName": "[variables('pgSkuNameMap')[parameters('postgresSkuTier')]]",
-    "computerName": "ora-bridge-vm",
+    "computerName": "migration-ws",
     "openAiUserRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]"
   },
   "resources": [

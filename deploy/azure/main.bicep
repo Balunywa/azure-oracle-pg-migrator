@@ -71,7 +71,7 @@ var pgSubnet     = 'postgres'
 var nsgName      = 'oracle-bridge-nsg'
 var pipName      = 'oracle-bridge-pip'
 var nicName      = 'oracle-bridge-nic'
-var vmName       = 'oracle-bridge-vm'
+var vmName       = 'migration-workstation'
 var bastionName  = 'oracle-bridge-bastion'
 var oracleVmName = 'oracle-source-vm'
 var oracleNicName = 'oracle-source-nic'
@@ -88,7 +88,7 @@ var pgSkuNameMap = {
 var pgSkuName = pgSkuNameMap[postgresSkuTier]
 
 // Windows computer names must be <= 15 characters.
-var computerName = 'ora-bridge-vm'
+var computerName = 'migration-ws'
 
 // Cloud-init for the Oracle source VM, with deploy-time values substituted in.
 // The Oracle VM also installs the recommended PostgreSQL extensions into the

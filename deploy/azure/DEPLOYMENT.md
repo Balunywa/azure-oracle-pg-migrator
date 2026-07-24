@@ -22,7 +22,7 @@ Oracle, PostgreSQL, and Azure OpenAI.
 
 | Component | Resource | Notes |
 |---|---|---|
-| Workstation | Windows Server 2022 VM (`oracle-bridge-vm`) | VS Code + PostgreSQL extension + Oracle Instant Client + Azure CLI; system-assigned identity |
+| Workstation | Windows Server 2022 VM (`migration-workstation`) | VS Code + PostgreSQL extension + Oracle Instant Client + Azure CLI; system-assigned identity |
 | Oracle source | Ubuntu VM (`oracle-source-vm`) | Runs Oracle Database Free 23ai in a container, seeded with the HR schema; service `FREEPDB1`, port 1521 |
 | PostgreSQL target | Azure Database for PostgreSQL flexible server | Private access into a delegated subnet + private DNS zone; no public endpoint |
 | AI conversion | Azure OpenAI account + model deployment | Default model `gpt-5-mini`; workstation identity granted **Cognitive Services OpenAI User** |
@@ -117,7 +117,7 @@ enabled — this deployment configures both.
 To reset the login password later without a console:
 
 ```bash
-az vm run-command invoke -g oracle-bridge-rg -n oracle-bridge-vm \
+az vm run-command invoke -g oracle-bridge-rg -n migration-workstation \
   --command-id RunPowerShellScript \
   --scripts "net user azureuser '<new-password>'"
 ```
